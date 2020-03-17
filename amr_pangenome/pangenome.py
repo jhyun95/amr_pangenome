@@ -18,16 +18,56 @@ import pandas as pd
 def build_cds_pangenome(genome_faa_paths, output_dir, name='Test', 
                         cdhit_args={'-n':5, '-c':0.8}, fastasort_path=None):
     ''' 
-    TODO
+    Constructs a pan-genome based on protein sequences with the following steps:
+    1) Merge FAA files for genomes of interest into a non-redundant list
+    2) Cluster CDS by sequence into putative genes using CD-Hit
+    3) Rename non-redundant CDS as <name>_C#A#, referring to cluster and allele number
+    4) Compile allele/gene membership into binary allele x genome and gene x genome tables
+    
+    Generates six files within output_dir:
+    1) <name>_strain_by_allele.csv.gz, binary allele x genome table
+    2) <name>_strain_by_gene.csv.gz, binary gene x genome table
+    3) <name>_nr.faa, all non-redundant CDSs observed, with headers <name>_C#A#
+    4) <name>_nr.faa.cdhit.clstr, CD-Hit output file from clustering
+    5) <name>_allele_names.tsv, mapping between <name>_C#A# to representative CDS headers
+    6) <name>_redundant_headers.tsv, lists of headers sharing the same CDS, with the
+        representative header relevant to #5 listed first for each group.
+    7) <name>_missing_headers.txt, lists headers for original entries missing sequences
+    
+    Parameters
+    ----------
+    genome_faa_paths : list 
+        FAA files containing CDSs for genomes of interest. Genome 
+        names are inferred from these FAA file paths.
+    output_dir : str
+        Path to directory to generate outputs and intermediates.
+    name : str
+        Header to prepend to all output files and allele names (default 'Test')
+    cdhit_args : dict
+        Alignment arguments to pass CD-Hit, other than -i, -o, and -d
+        (default {'-n':5, '-c':0.8})
+    fastasort_path : str
+        Path to Exonerate's fastasort binary, optionally for sorting
+        final FAA files (default None)
+        
+    Returns 
+    -------
+    df_alleles : pd.DataFrame
+        Binary allele x genome table
+    df_genes : pd.DataFrame
+        Binary gene x genome table
     '''
     
     ''' Merge FAAs into one file with non-redundant sequences '''
     print 'Identifying non-redundant CDS sequences...'
     output_nr_faa = output_dir + '/' + name + '_nr.faa' # final non-redundant FAA files
     output_shared_headers = output_dir + '/' + name + '_redundant_headers.tsv' # records headers that have the same sequence
+    output_missing_headers = output_dir + '/' + name + '_missing_headers.txt' # records headers without any seqeunce
     output_nr_faa = output_nr_faa.replace('//','/')
     output_shared_headers = output_shared_headers.replace('//','/')
-    non_redundant_seq_hashes = consolidate_cds(genome_faa_paths, output_nr_faa, output_shared_headers)
+    output_missing_headers = output_missing_headers.replace('//','/')
+    non_redundant_seq_hashes, missing_headers = consolidate_cds(genome_faa_paths, output_nr_faa, 
+                                                                output_shared_headers, output_missing_headers)
     # maps sequence hash to headers of that sequence, in order observed
     
     ''' Apply CD-Hit to non-redundant CDS sequences '''
@@ -55,11 +95,11 @@ def build_cds_pangenome(genome_faa_paths, output_dir, name='Test',
     return df_alleles, df_genes
     
 
-def consolidate_cds(genome_faa_paths, nr_faa_out, shared_headers_out):
+def consolidate_cds(genome_faa_paths, nr_faa_out, shared_headers_out, missing_headers_out=None):
     ''' 
     Combines CDS protein sequences for many genomes into a single file while
     without duplicate sequences to be clustered using cluster_cds (CD-Hit wrapper),
-    and tracks headers that share the same sequence.
+    Tracks headers that share the same sequence, and optionally headers without sequences.
     
     Parameters
     ----------
@@ -69,20 +109,25 @@ def consolidate_cds(genome_faa_paths, nr_faa_out, shared_headers_out):
         Output path for combined non-redundant FAA file
     shared_headers_out : str
         Output path for shared headers TSV file
+    missing_headers_out : str
+        Output path for headers without sequences TXT file (default None)
 
     Returns
     -------
     non_redundant_seq_hashes : dict
         Maps non-redundant sequence hashes to a list of headers, in order observed
+    missing_headers : list
+        List of headers without any associated sequence
     '''
     non_redundant_seq_hashes = {} # maps sequence hash to headers of that sequence, in order observed
     encounter_order = [] # stores sequence hashes in order encountered
+    missing_headers = [] # stores headers without sequences
     
     def process_header_and_seq(header, seq_blocks, output_file):
         ''' Processes a header/sequence pair against the running list of non-redundant sequences '''
-        if len(header) > 0 and len(seq_blocks) > 0: # process previous sequence record
-            seq = ''.join(seq_blocks)
-            seqhash = hashlib.sha256(seq).hexdigest()
+        seq = ''.join(seq_blocks)
+        if len(header) > 0 and len(seq) > 0: # valid header-sequence record
+            seqhash = __hash_sequence__(seq)
             if seqhash in non_redundant_seq_hashes: # record repeated appearances of sequence
                 non_redundant_seq_hashes[seqhash].append(header)
             else: # first encounter of a sequence, record to non-redundant FAA file
@@ -90,6 +135,8 @@ def consolidate_cds(genome_faa_paths, nr_faa_out, shared_headers_out):
                 non_redundant_seq_hashes[seqhash] = [header]
                 output_file.write('>' + header + '\n')
                 output_file.write('\n'.join(seq_blocks) + '\n')
+        elif len(header) > 0 and len(seq) == 0: # header without sequence
+            missing_headers.append(header)
     
     ''' Scan for redundant CDS for all FAA files, build non-redundant file '''
     with open(nr_faa_out, 'w+') as f_nr_out:
@@ -105,13 +152,19 @@ def consolidate_cds(genome_faa_paths, nr_faa_out, shared_headers_out):
                         seq_blocks.append(line.strip())
                 process_header_and_seq(header, seq_blocks, f_nr_out) # process last record
                 
-    ''' Save shared headers to file '''
+    ''' Save shared and missing headers to file '''
     with open(shared_headers_out, 'w+') as f_header_out:
         for seqhash in encounter_order:
             headers = non_redundant_seq_hashes[seqhash]
             if len(headers) > 1:
                 f_header_out.write('\t'.join(headers) + '\n')
-    return non_redundant_seq_hashes
+    if missing_headers_out:
+        print 'Headers without sequences:', len(missing_headers)
+        with open(missing_headers_out, 'w+') as f_header_out:
+            for header in missing_headers:
+                f_header_out.write(header + '\n')
+                
+    return non_redundant_seq_hashes, missing_headers
         
                 
 def cluster_cds(faa_file, cdhit_out, cdhit_args={'-n':5, '-c':0.8}):
@@ -224,7 +277,7 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
     clstr_file : str
         Path to CD-Hit CLSTR file used to build header-allele mappings
     genome_faa_paths : list
-        Paths to genome FAA files originally combined as clustered (see consolidate_cds)
+        Paths to genome FAA files originally combined and clustered (see consolidate_cds)
     shared_header_file : str
         Path to shared header TSV file (see conslidate_cds)
     allele_table_out : str
@@ -242,7 +295,9 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
     df_genes : pd.DataFrame
         Binary gene x genome table
     '''
-    if header_to_allele is None: # header-allele mapping not provided, re-build from CLSTR
+    
+    ''' Load header to allele mapping from CLSTR, if not provided '''
+    if header_to_allele is None:
         header_to_allele = {} # maps representative header to allele name (name_C#A#)
         with open(clstr_file, 'r') as f_clstr:
             for line in f_clstr:
@@ -287,21 +342,34 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
     print 'Genes:', len(gene_order)
         
     ''' Scan original genome file for allele and gene membership '''
-    for genome_faa in genome_faa_paths:
+    for i, genome_faa in enumerate(sorted(genome_faa_paths)):
         genome = faa_to_genome(genome_faa)
-        genome_alleles = []; genome_genes = []
+        genome_alleles = set(); genome_genes = set()
         with open(genome_faa, 'r') as f_faa:
+            header = ''; seq = '' # track the sequence to skip over empty sequences
             for line in f_faa:
                 ''' Load all alleles and genes per genome '''
-                if line[0] == '>':
+                if line[0] == '>': # new header line encountered
+                    if len(seq) > 0:
+                        allele = header_to_allele[header] if header in header_to_allele \
+                            else shared_header_to_allele[header]
+                        gene = __get_gene_from_allele__(allele)
+                        genome_alleles.add(allele)
+                        genome_genes.add(gene)
                     header = __get_header_from_fasta_line__(line)
-                    allele = header_to_allele[header] if header in header_to_allele \
-                        else shared_header_to_allele[header]
-                    gene = __get_gene_from_allele__(allele)
-                    genome_alleles.append(allele)
-                    genome_genes.append(gene)
+                    seq = '' # reset sequence
+                else: # sequence line encountered
+                    seq += line.strip()
+            if len(seq) > 0: # process last record
+                allele = header_to_allele[header] if header in header_to_allele \
+                    else shared_header_to_allele[header]
+                gene = __get_gene_from_allele__(allele)
+                genome_alleles.add(allele)
+                genome_genes.add(gene)
+                    
             ''' Save to running table  '''
-            print 'Updating genome', genome, len(genome_alleles), len(genome_genes)
+            print 'Updating genome', i+1, ':', genome, 
+            print '\tAlleles:', len(genome_alleles), '\tGenes:', len(genome_genes)
             df_alleles.loc[genome_alleles, genome] = 1
             df_genes.loc[genome_genes, genome] = 1
     
@@ -312,11 +380,88 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
     return df_alleles, df_genes
 
 
+def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
+    '''
+    Verifies that the allele x genome table is consistent with the original FAA files.
+    
+    Parameters
+    ----------
+    df_alleles : pd.DataFrame or str
+        Either the allele x genome table, or path to the table as CSV or CSV.GZ
+    genome_faa_paths : list
+        Paths to genome FAA files originally combined and clustered
+    alleles_faa : str
+        Path to non-redundant sequences corresponding to df_alleles
+    '''
+    
+    if type(df_alleles) == str:
+        df = pd.read_csv(df_alleles, dtype={'Unnamed: 0':str}).set_index('Unnamed: 0')
+    else:
+        df = df_alleles
+    
+    ''' Pre-load hashes for non-redundant protein sequences '''
+    print 'Loading non-redundant sequences...'
+    seqhash_to_allele = {}
+    with open(alleles_faa, 'r') as f_faa:
+        header = ''; seq_blocks = []
+        for line in f_faa:
+            if line[0] == '>': # new sequence encountered
+                if len(seq_blocks) > 0:
+                    seqhash = __hash_sequence__(''.join(seq_blocks))
+                    seqhash_to_allele[seqhash] = header
+                header = line[1:].strip()
+                seq_blocks = []
+            else: # sequence encountered
+                seq_blocks.append(line.strip())
+        # process last record
+        seqhash = __hash_sequence__(''.join(seq_blocks))
+        seqhash_to_allele[seqhash] = header
+                        
+    ''' Validate individual genomes against table '''
+    allele_counts = df_alleles.sum() # genome x total alleles
+    for i, genome_faa in enumerate(sorted(genome_faa_paths)):
+        print 'Validating genome', i+1, ':', genome_faa, 
+        
+        ''' Load all alleles present in the genome '''
+        genome_alleles = set()
+        with open(genome_faa, 'r') as f_faa:
+            allele = ''; seq_blocks = []
+            for line in f_faa:
+                if line[0] == '>': # new sequence encountered
+                    seq = ''.join(seq_blocks)
+                    if len(seq) > 0:
+                        seqhash = __hash_sequence__(seq)
+                        allele = seqhash_to_allele[seqhash]
+                        genome_alleles.add(allele)
+                    seq_blocks = []
+                else: # sequence encountered
+                    seq_blocks.append(line.strip())
+            # process last record
+            seq = ''.join(seq_blocks)
+            if len(seq) > 0:
+                seqhash = __hash_sequence__(seq)
+                allele = seqhash_to_allele[seqhash]
+                genome_alleles.add(allele)
+            
+        ''' Check that identified alleles are consistent with the table '''
+        genome = genome_faa.split('/')[-1][:-4]
+        df_ga = df_alleles.loc[:,genome]
+        table_alleles = set(df_ga.index[pd.notnull(df_ga)])
+        test = table_alleles == genome_alleles
+        print test, len(table_alleles), len(genome_alleles)
+
+                          
 def __get_gene_from_allele__(allele):
+    ''' Convers <name>_C#A# allele to <name>_C# gene '''
     return 'A'.join(allele.split('A')[:-1])
 
 def __get_header_from_fasta_line__(line):
+    ''' Extracts a short header from a full header line in a fasta'''
     return line.split()[0][1:].strip()
+
+def __hash_sequence__(seq):
+    ''' Hashes arbitary length strings/sequences '''
+    return hashlib.sha256(seq).hexdigest()
             
 def __stream_stdout__(command):
     ''' Hopefully Jupyter-safe method for streaming process stdout '''
