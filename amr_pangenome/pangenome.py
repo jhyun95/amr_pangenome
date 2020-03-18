@@ -14,6 +14,7 @@ import subprocess as sp
 import hashlib 
 
 import pandas as pd
+import numpy as np
 
 def build_cds_pangenome(genome_faa_paths, output_dir, name='Test', 
                         cdhit_args={'-n':5, '-c':0.8}, fastasort_path=None):
@@ -379,6 +380,56 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
         df_genes.to_csv(gene_table_out)
     return df_alleles, df_genes
 
+def validate_gene_table(df_genes, df_alleles):
+    '''
+    Verifies that the gene x genome table is consistent with the
+    corresponding allele x genome table.
+    
+    Parameters
+    ----------
+    df_genes : pd.DataFrame or str
+        Either the gene x genome table, or path to the table as CSV or CSV.GZ
+    df_alleles : pd.DataFrame or str
+        Either the allele x genome table, or path to the table as CSV or CSV.GZ
+    '''
+    dfg = pd.read_csv(df_genes, index_col=0) if type(df_genes) == str else df_genes
+    dfa = pd.read_csv(df_alleles, index_col=0) if type(df_alleles) == str else df_alleles
+    print 'Validating gene clusters...'
+    
+    current_cluster = None; allele_data = []; 
+    clusters_tested = 0; inconsistencies = 0
+    for allele_row in dfa.fillna(0).itertuples(name=None):
+        cluster = __get_gene_from_allele__(allele_row[0])
+
+        if current_cluster is None: # initializing
+            current_cluster = cluster
+        elif current_cluster != cluster: # end of gene cluster
+            alleles_all = np.array(allele_data)
+            has_gene = alleles_all.sum(axis=0) > 0
+            is_consistent = np.array_equal(has_gene, dfg.loc[current_cluster,:].fillna(0).values)
+            clusters_tested += 1
+            if not is_consistent:
+                print 'Inconsistent', cluster
+                print has_gene
+                print dfg.loc[current_cluster,:].fillna(0).values
+                inconsistencies += 1
+            if clusters_tested % 1000 == 0:
+                print '\tTested', clusters_tested, 'clusters'
+            allele_data = []
+            current_cluster = cluster
+        allele_data.append(np.array(allele_row[1:]))
+    
+    ''' Process final line '''
+    alleles_all = np.array(allele_data) 
+    has_gene = alleles_all.sum(axis=0) > 0
+    is_consistent = np.array_equal(has_gene, dfg.loc[current_cluster,:].fillna(0).values)
+    if not is_consistent:
+        print 'Inconsistent', cluster
+        print has_gene
+        print dfg.loc[current_cluster,:].fillna(0).values
+        inconsistencies += 1
+    print 'Inconsistencies:', inconsistencies
+
 
 def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
     '''
@@ -393,11 +444,7 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
     alleles_faa : str
         Path to non-redundant sequences corresponding to df_alleles
     '''
-    
-    if type(df_alleles) == str:
-        df = pd.read_csv(df_alleles, dtype={'Unnamed: 0':str}).set_index('Unnamed: 0')
-    else:
-        df = df_alleles
+    dfa = pd.read_csv(df_alleles, index_col=0) if type(df_alleles) == str else df_alleles
     
     ''' Pre-load hashes for non-redundant protein sequences '''
     print 'Loading non-redundant sequences...'
@@ -418,7 +465,7 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
         seqhash_to_allele[seqhash] = header
                         
     ''' Validate individual genomes against table '''
-    allele_counts = df_alleles.sum() # genome x total alleles
+    allele_counts = dfa.sum() # genome x total alleles
     for i, genome_faa in enumerate(sorted(genome_faa_paths)):
         print 'Validating genome', i+1, ':', genome_faa, 
         
@@ -445,7 +492,7 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
             
         ''' Check that identified alleles are consistent with the table '''
         genome = genome_faa.split('/')[-1][:-4]
-        df_ga = df_alleles.loc[:,genome]
+        df_ga = dfa.loc[:,genome]
         table_alleles = set(df_ga.index[pd.notnull(df_ga)])
         test = table_alleles == genome_alleles
         print test, len(table_alleles), len(genome_alleles)
