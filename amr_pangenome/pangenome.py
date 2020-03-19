@@ -400,13 +400,176 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, allele_table_out=
         df_genes.to_csv(gene_table_out)
     return df_alleles, df_genes
 
-def build_upstream_pangenome():
-    pass # TODO
 
+def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,3), name='Test', 
+                             include_fragments=False, fastasort_path=None):
+    '''
+    Extracts nucleotides upstream of coding sequences for multiple genomes, 
+    create <genome>_upstream.fna files in the same directory for each genome.
+    Then, classifies/names them relative to gene clusters identified by coding sequence,  
+    i.e. after build_cds_pangenome(). See extract_upstream_sequences() for more details.
+    
+    Parameters
+    ----------
+    genome_data : list
+        List of 2-tuples (genome_gff, genome_fna) for use by extract_upstream_sequences
+    allele_names : str
+        Path to allele names file, should be named <name>_allele_names.tsv
+    output_dir : str
+        Path to directory to generate summary outputs.
+    limits : 2-tuple
+        Length of upstream region to extract, formatted (-X,Y). Will extract X 
+        upstream bases (up to but excluding first base of start codon) and Y coding 
+        bases (including first base of start codon), for total length of X+Y bases
+        (default (-50,3))
+    name : str
+        Short header to prepend output summary files, ideally same as what
+        was used in the build_cds_pangenome() (default 'Test')
+    include_fragments : bool
+        If true, include upstream sequences that are not fully available 
+        due to contig boundaries (default False)
+    fastasort_path : str
+        Path to Exonerate's fastasort binary, optionally for sorting
+        final FNA files (default None)
+        
+    Returns
+    -------
+    df_upstream : pd.DataFrame
+        Binary upstream x genome table
+    '''
+    
+    ''' Load header-allele name mapping '''
+    print 'Loading header-allele mapping...'
+    feature_to_allele = {}
+    with open(allele_names, 'r') as f_all:
+        for line in f_all:
+            data = line.strip().split('\t')
+            allele = data[0]; synonyms = data[1:]
+            for synonym in synonyms:
+                feature_to_allele[synonym] = allele
+        
+    ''' Generate upstream sequences '''
+    print 'Extracting upstream sequences...'
+    genome_upstreams = []
+    for i, gff_fna in enumerate(genome_data):
+        ''' Prepare output path '''
+        genome_gff, genome_fna = gff_fna
+        genome = genome_gff.split('/')[-1][:-4] # trim off path and .gff
+        genome_dir = '/'.join(genome_gff.split('/')[:-1]) + '/' if '/' in genome_gff else ''
+        genome_upstream_dir = genome_dir + 'derived/'
+        if not os.path.exists(genome_upstream_dir):
+            os.mkdir(genome_upstream_dir)
+        genome_upstream = genome_upstream_dir + genome + '_upstream.fna'
+            
+        ''' Extract upstream sequences '''
+        print i+1, genome
+        genome_upstreams.append(genome_upstream)
+        extract_upstream_sequences(genome_gff, genome_fna, genome_upstream, limits=limits,
+                                   feature_to_allele=feature_to_allele, 
+                                   include_fragments=include_fragments)
+        
+    ''' Consolidate non-redundant upstream sequences per gene '''
+    print 'Identifying non-redundant upstream sequences per gene...'
+    map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2]) # filter out locus tags
+    feature_to_allele = {map_feature_to_gffid(k):v for k,v in feature_to_allele.items()}
+    nr_upstream_out = output_dir + '/' + name + '_nr_upstream.fna'
+    nr_upstream_out = nr_upstream_out.replace('//','/')
+    df_upstream = consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele)
+    
+    ''' Optionally sort non-redundant upstream sequences file '''
+    if fastasort_path:
+        print 'Sorting sequences by header...'
+        args = ['./' + fastasort_path, nr_upstream_out]
+        with open(nr_upstream_out + '.tmp', 'w+') as f_sort:
+            sp.call(args, stdout=f_sort)
+        os.rename(nr_upstream_out + '.tmp', nr_upstream_out)
+        
+    ''' Save upstream x genome table '''
+    upstream_table_out = output_dir + '/' + name + '_strain_by_upstream.csv.gz'
+    upstream_table_out = upstream_table_out.replace('//','/')
+    df_upstream.to_csv(upstream_table_out)
+    return df_upstream
+    
+
+def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
+    '''
+    Conslidates upstream sequences to a non-redundant set with respect 
+    to each gene described by feature_to_allele (maps features to <name>_C#A#),
+    then creates an upstream x genome binary table. Sequences in nr_upstream_out 
+    are sorted by order encountered, not gene.
+    
+    Parameters
+    ----------
+    genome_upstreams : list
+        List of paths to upstream sequences FNA to combine
+    nr_upstream_out : str
+        Path to output non-redundant upstream sequences as FNA
+    feature_to_allele : dict
+        Dictionary mapping headers to <name>_C#A# alleles
+    
+    Returns
+    -------
+    df_upstream : pd.DataFrame
+         Binary upstream x genome table
+    '''
+    gene_to_unique_upstream = {} # maps gene:upstream_seq:upstream_seq_id (int)
+    genome_to_upstream = {} # maps genome:upstream_name:1 if present (<name>_C#U#)
+    
+    with open(nr_upstream_out, 'w+') as f_nr_ups:
+        for genome_upstream in genome_upstreams:
+            ''' Infer genome name from genome filename '''
+            genome = genome_upstream.split('/')[-1] # trim off full path
+            genome = genome.split('_upstream')[0] # remove _upstream.fna footer
+            genome_to_upstream[genome] = {}
+            
+            ''' Process genome's upstream record '''
+            with open(genome_upstream, 'r') as f_ups: # reading current upstream
+                header = ''; upstream_seq = ''
+                for line in f_ups:
+                    if line[0] == '>': # header line
+                        if len(upstream_seq) > 0:
+                            ''' Process header-seq to non-redundant <name>_C#U# upstream allele '''
+                            feature = header.split('_upstream(')[0] # trim off "_upstream" footer
+                            allele = feature_to_allele[feature] # get <name>_C#A# allele
+                            gene = __get_gene_from_allele__(allele) # gene <name>_C# gene
+                            if not gene in gene_to_unique_upstream:
+                                gene_to_unique_upstream[gene] = {}
+                            if not upstream_seq in gene_to_unique_upstream[gene]:
+                                gene_to_unique_upstream[gene][upstream_seq] = len(gene_to_unique_upstream[gene])
+                            upstream_id = gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq])
+                            genome_to_upstream[genome][upstream_id] = 1
+                            
+                            ''' Write renamed sequence to temporary file '''
+                            f_nr_ups.write('>' + upstream_id + '\n')
+                            f_nr_ups.write(upstream_seq + '\n')
+
+                        header = line[1:].strip(); upstream_seq = ''
+                    else: # sequence line
+                        upstream_seq += line.strip()
+            
+                ''' Process last record'''
+                feature = header.split('_upstream(')[0] # trim off "_upstream" footer
+                allele = feature_to_allele[feature] # get <name>_C#A# allele
+                gene = __get_gene_from_allele__(allele) # gene <name>_C# gene
+                if not gene in gene_to_unique_upstream:
+                    gene_to_unique_upstream[gene] = {}
+                if not upstream_seq in gene_to_unique_upstream[gene]:
+                    gene_to_unique_upstream[gene][upstream_seq] = len(gene_to_unique_upstream[gene])
+                upstream_id = gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq])
+                genome_to_upstream[genome][upstream_id] = 1
+
+                ''' Write renamed sequence to temporary file '''
+                f_nr_ups.write('>' + upstream_id + '\n')
+                f_nr_ups.write(upstream_seq + '\n')
+    
+    df_upstream = pd.DataFrame.from_dict(genome_to_upstream)
+    return df_upstream
+
+                
 def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50,3), 
                                feature_to_allele=None, allele_names=None, include_fragments=False):
     '''
-    Extracts nucleotide upstream of coding sequences. Interprets GFFs as formatted by PATRIC:
+    Extracts nucleotides upstream of coding sequences. Interprets GFFs as formatted by PATRIC:
         1) Assumes contigs are labeled "accn|<contig>". 
         2) Assumes protein features have ".peg." in the ID
         3) Assumes ID = fig|<genome>.peg.#
@@ -419,22 +582,22 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
     genome_fna : str
         Path to genome FNA file with contig nucleotides
     upstream_out : str
-        Path to output upstream sequences FNA files.
+        Path to output upstream sequences FNA files
     limits : 2-tuple
         Length of upstream region to extract, formatted (-X,Y). Will extract X 
         upstream bases (up to but excluding first base of start codon) and Y coding 
-        bases (including first base of start codon), for total length of X+Y bases.
+        bases (including first base of start codon), for total length of X+Y bases
         (default (-50,3)) 
     feature_to_allele : dict
         Dictionary mapping original feature headers to <name>_C#A# short names,
-        alternatively, the allele_names file can be provided (default None).
+        alternatively, the allele_names file can be provided (default None)
     allele_names : str
         Path to allele names file if feature_to_allele is not provided,
         should be named <name>_allele_names.tsv. If neither are provided,
         simply processes all features present in the GFF (default None)
     include_fragments : bool
         If true, include upstream sequences that are not fully available 
-        due to contig boundaries (default False).
+        due to contig boundaries (default False)
     '''
     
     ''' Load contig sequences '''
@@ -476,6 +639,7 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
         complement[bp.lower()] = complement[bp].lower()
     reverse_complement = lambda s: (''.join([complement[base] for base in list(s)]))[::-1]
     feature_footer = '_upstream' + str(limits).replace(' ','')
+    upstream_count = 0
     with open(upstream_out, 'w+') as f_ups:
         with open(genome_gff, 'r') as f_gff:
             for line in f_gff:
@@ -499,7 +663,7 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
                                 ups_end = start + limits[1] - 1
                                 upstream = contig_seq[ups_start:ups_end].strip()
                             else: # negative strand
-                                ups_start = stop + limits[1]
+                                ups_start = stop - limits[1]
                                 ups_end = stop - limits[0] 
                                 upstream = contig_seq[ups_start:ups_end].strip()
                                 upstream = reverse_complement(upstream)
@@ -509,6 +673,9 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
                                 feat_name = gffid + feature_footer
                                 f_ups.write('>' + feat_name + '\n')
                                 f_ups.write(upstream + '\n')
+                                upstream_count += 1
+                                   
+    print 'Loaded upstream sequences:', upstream_count
 
 
 def validate_gene_table(df_genes, df_alleles):
@@ -630,7 +797,7 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
 
                           
 def __get_gene_from_allele__(allele):
-    ''' Convers <name>_C#A# allele to <name>_C# gene '''
+    ''' Converts <name>_C#A# allele to <name>_C# gene '''
     return 'A'.join(allele.split('A')[:-1])
 
 def __get_header_from_fasta_line__(line):
