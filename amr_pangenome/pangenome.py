@@ -30,7 +30,7 @@ def build_cds_pangenome(genome_faa_paths, output_dir, name='Test',
     2) <name>_strain_by_gene.csv.gz, binary gene x genome table
     3) <name>_nr.faa, all non-redundant CDSs observed, with headers <name>_C#A#
     4) <name>_nr.faa.cdhit.clstr, CD-Hit output file from clustering
-    5) <name>_allele_names.tsv, mapping between <name>_C#A# to representative CDS headers
+    5) <name>_allele_names.tsv, mapping between <name>_C#A# to original CDS headers
     6) <name>_redundant_headers.tsv, lists of headers sharing the same CDS, with the
         representative header relevant to #5 listed first for each group.
     7) <name>_missing_headers.txt, lists headers for original entries missing sequences
@@ -82,8 +82,9 @@ def build_cds_pangenome(genome_faa_paths, output_dir, name='Test',
     output_allele_names = output_allele_names.replace('//','/')
     header_to_allele = rename_genes_and_alleles(output_nr_clstr, output_nr_faa, output_nr_faa, 
                                                 output_allele_names, name=name,
+                                                shared_headers_file=output_shared_headers,
                                                 fastasort_path=fastasort_path)
-    # maps representative non-redundant headers to short names <name>_C#A#
+    # maps original headers to short names <name>_C#A#
     
     ''' Process gene/allele membership into binary tables '''
     output_allele_table = output_dir + '/' + name + '_strain_by_allele.csv.gz'
@@ -91,7 +92,7 @@ def build_cds_pangenome(genome_faa_paths, output_dir, name='Test',
     output_allele_table = output_allele_table.replace('//','/')
     output_gene_table = output_gene_table.replace('//','/')
     df_alleles, df_genes = build_genetic_feature_tables(output_nr_clstr, genome_faa_paths, 
-                              output_shared_headers, output_allele_table, output_gene_table, 
+                              output_allele_table, output_gene_table, 
                               header_to_allele=header_to_allele)
     return df_alleles, df_genes
     
@@ -191,7 +192,7 @@ def cluster_cds(faa_file, cdhit_out, cdhit_args={'-n':5, '-c':0.8}):
         print line
 
 def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_out, name='Test',
-                            fastasort_path=None):
+                             shared_headers_file=None, fastasort_path=None):
     '''
     Processes a CD-Hit CLSTR file (clstr_file) to rename headers in the orignal
     FAA (nr_faa_file) as <name>_C#A# based on cluster membership and stores header-name
@@ -212,6 +213,9 @@ def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_
         Output path for header-allele name mapping TSV file
     name : str
         Header to append output files and allele names (default 'Test')
+    shared_headers_file : str
+        Path to shared headers. If provided, will expand the header-allele
+        mapping to include headers that map to the same sequence/allele (default None)
     fastasort_path : str
         Path to Exonerate fastasort, used to optionally sort nr_faa (default None)
         
@@ -221,8 +225,18 @@ def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_
         Maps original headers to new allele names
     '''
     
+    ''' Optionally, load up shared headers '''
+    shared_headers = {} # maps representative header to synonym headers
+    if shared_headers_file:
+        with open(shared_headers_file, 'r') as f_share:
+            for line in f_share:
+                headers = line.strip().split('\t')
+                representative_header = headers[0]
+                synonym_headers = headers[1:]
+                shared_headers[representative_header] = synonym_headers
+    
     ''' Read through CLSTR file to map original headers to C#A# names '''
-    header_to_allele = {} # maps representative header to allele name (name_C#A#)
+    header_to_allele = {} # maps headers to allele name (name_C#A#)
     max_cluster = 0 
     with open(feature_names_out, 'w+') as f_naming:
         with open(clstr_file, 'r') as f_clstr:
@@ -236,7 +250,12 @@ def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_
                     allele_header = data[2][1:-3] # old allele header
                     allele_name = name + '_C' + cluster_num + 'A' + allele_num # new short header
                     header_to_allele[allele_header] = allele_name
-                    f_naming.write(allele_name + '\t' + allele_header + '\n')
+                    mapped_headers = [allele_header]
+                    if allele_header in shared_headers: # if synonym headers are available
+                        for synonym_header in shared_headers[allele_header]:
+                            header_to_allele[synonym_header] = allele_name
+                        mapped_headers += shared_headers[allele_header]
+                    f_naming.write(allele_name + '\t' + ('\t'.join(mapped_headers)).strip() + '\n')
                     
     ''' Create the FAA file with renamed features '''
     with open(nr_faa_file, 'r') as f_faa_old:
@@ -265,8 +284,8 @@ def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_
     return header_to_allele
     
 
-def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_file, 
-                                 allele_table_out, gene_table_out, header_to_allele=None):
+def build_genetic_feature_tables(clstr_file, genome_faa_paths, allele_table_out=None, gene_table_out=None,
+                                 shared_header_file=None, header_to_allele=None):
     '''
     Builds two binary tables based on the presence/absence of genetic features, 
     allele x genome (allele_table_out) and gene x genome (gene_table_out). 
@@ -279,12 +298,13 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
         Path to CD-Hit CLSTR file used to build header-allele mappings
     genome_faa_paths : list
         Paths to genome FAA files originally combined and clustered (see consolidate_cds)
-    shared_header_file : str
-        Path to shared header TSV file (see conslidate_cds)
     allele_table_out : str
         Output path for binary allele x genome table, expect CSV or CSV.GZ (default None)
     gene_table_out : str
         Output path for binary gene x genome table, expect CSV or CSV.GZ (default None)
+    shared_header_file : str
+        Path to shared header TSV file, if synonym headers are not mapped
+        in header_to_allele or header_to_allele is not provided (default None)
     header_to_allele : dict
         Pre-calculated header-allele mappings corresponding to clstr_file,
         if available from rename_genes_and_alleles (default None)
@@ -314,14 +334,15 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
     
     ''' Load headers that share the same sequence '''
     shared_header_to_allele = {} # same format as header_to_allele
-    with open(shared_header_file, 'r') as f_header:
-        for line in f_header:
-            headers = [x.strip() for x in line.split('\t')]
-            if len(headers) > 1:
-                repr_header = headers[0]
-                repr_allele = header_to_allele[repr_header]
-                for alt_header in headers[1:]:
-                    shared_header_to_allele[alt_header] = repr_allele
+    if shared_header_file:
+        with open(shared_header_file, 'r') as f_header:
+            for line in f_header:
+                headers = [x.strip() for x in line.split('\t')]
+                if len(headers) > 1:
+                    repr_header = headers[0]
+                    repr_allele = header_to_allele[repr_header]
+                    for alt_header in headers[1:]:
+                        shared_header_to_allele[alt_header] = repr_allele
                     
     ''' Initialize gene and allele tables '''
     faa_to_genome = lambda x: x.split('/')[-1][:-4]
@@ -333,7 +354,6 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
     gene_order = []; last_gene = None
     for allele in allele_order:
         gene = __get_gene_from_allele__(allele)
-        # print allele, gene, last_gene
         if gene != last_gene:
             gene_order.append(gene)
             last_gene = gene
@@ -379,6 +399,117 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, shared_header_fil
     if gene_table_out:
         df_genes.to_csv(gene_table_out)
     return df_alleles, df_genes
+
+def build_upstream_pangenome():
+    pass # TODO
+
+def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50,3), 
+                               feature_to_allele=None, allele_names=None, include_fragments=False):
+    '''
+    Extracts nucleotide upstream of coding sequences. Interprets GFFs as formatted by PATRIC:
+        1) Assumes contigs are labeled "accn|<contig>". 
+        2) Assumes protein features have ".peg." in the ID
+        3) Assumes ID = fig|<genome>.peg.#
+    Output features are named "<feature header>_upstream(<limit1>,<limit2>)". 
+    
+    Parameters
+    ----------
+    genome_gff : str
+        Path to genome GFF file with CDS coordinates
+    genome_fna : str
+        Path to genome FNA file with contig nucleotides
+    upstream_out : str
+        Path to output upstream sequences FNA files.
+    limits : 2-tuple
+        Length of upstream region to extract, formatted (-X,Y). Will extract X 
+        upstream bases (up to but excluding first base of start codon) and Y coding 
+        bases (including first base of start codon), for total length of X+Y bases.
+        (default (-50,3)) 
+    feature_to_allele : dict
+        Dictionary mapping original feature headers to <name>_C#A# short names,
+        alternatively, the allele_names file can be provided (default None).
+    allele_names : str
+        Path to allele names file if feature_to_allele is not provided,
+        should be named <name>_allele_names.tsv. If neither are provided,
+        simply processes all features present in the GFF (default None)
+    include_fragments : bool
+        If true, include upstream sequences that are not fully available 
+        due to contig boundaries (default False).
+    '''
+    
+    ''' Load contig sequences '''
+    contigs = {} # header to contig sequence
+    with open(genome_fna, 'r') as f_fna:
+        header = ''; seq = ''
+        for line in f_fna:
+            if line[0] == '>': # header encountered
+                if len(seq) > 0: # save header-seq pair
+                    contigs[header] = seq
+                header = line.split()[0][1:]
+                seq = ''
+            else: # sequence line encountered
+                seq += line.strip()
+        if len(seq) > 0: # process last record
+            contigs[header] = seq
+            
+    ''' Load header-allele name mapping '''
+    map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2])
+    if feature_to_allele: # dictionary provided directly
+        feat_to_allele = {map_feature_to_gffid(k):v for k,v in feature_to_allele.items()}
+    elif allele_names: # allele map file provided
+        feat_to_allele = {}
+        with open(allele_names, 'r') as f_all:
+            for line in f_all:
+                data = line.strip().split('\t')
+                allele = data[0]; synonyms = data[1:]
+                for synonym in synonyms:
+                    gff_synonym = map_feature_to_gffid(synonym)
+                    feat_to_allele[gff_synonym] = allele
+    else: # no allele mapping, process everything
+        feat_to_allele = None
+                    
+    ''' Parse GFF file for CDS coordinates '''
+    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
+                  'W': 'W', 'S': 'S', 'R': 'Y', 'Y': 'R', 
+                  'M': 'K', 'K': 'M', 'N': 'N'}
+    for bp in complement.keys():
+        complement[bp.lower()] = complement[bp].lower()
+    reverse_complement = lambda s: (''.join([complement[base] for base in list(s)]))[::-1]
+    feature_footer = '_upstream' + str(limits).replace(' ','')
+    with open(upstream_out, 'w+') as f_ups:
+        with open(genome_gff, 'r') as f_gff:
+            for line in f_gff:
+                line = line.strip()
+                if len(line) > 0 and line[0] != '#':
+                    contig, src, feat_type, start, stop, score, strand, phase, attr_raw = line.split('\t')
+                    contig = contig.split('|')[-1] # accn|<contig> to just <contig>
+                    start = int(start); stop = int(stop)
+                    attrs = {} # key:value
+                    for entry in attr_raw.split(';'):
+                        k,v = entry.split('='); attrs[k] = v
+                    gffid = attrs['ID']
+
+                    ''' Verify allele has been mapped, and contig has been identified '''
+                    if contig in contigs: 
+                        if gffid in feat_to_allele or feat_to_allele is None:
+                            contig_seq = contigs[contig]
+                            ''' Identify upstream sequence '''
+                            if strand == '+': # positive strand
+                                ups_start = start + limits[0] - 1
+                                ups_end = start + limits[1] - 1
+                                upstream = contig_seq[ups_start:ups_end].strip()
+                            else: # negative strand
+                                ups_start = stop + limits[1]
+                                ups_end = stop - limits[0] 
+                                upstream = contig_seq[ups_start:ups_end].strip()
+                                upstream = reverse_complement(upstream)
+                                
+                            ''' Save upstream sequence '''
+                            if len(upstream) == -limits[0] + limits[1] or include_fragments:
+                                feat_name = gffid + feature_footer
+                                f_ups.write('>' + feat_name + '\n')
+                                f_ups.write(upstream + '\n')
+
 
 def validate_gene_table(df_genes, df_alleles):
     '''
