@@ -12,6 +12,7 @@ gene sequence cluster identification by CD-Hit, and constructing gene/allele tab
 import os
 import subprocess as sp
 import hashlib 
+import collections
 
 import pandas as pd
 import numpy as np
@@ -524,7 +525,7 @@ def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
             
             ''' Process genome's upstream record '''
             with open(genome_upstream, 'r') as f_ups: # reading current upstream
-                header = ''; upstream_seq = ''
+                header = ''; upstream_seq = ''; new_sequence = False
                 for line in f_ups:
                     if line[0] == '>': # header line
                         if len(upstream_seq) > 0:
@@ -536,12 +537,15 @@ def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
                                 gene_to_unique_upstream[gene] = {}
                             if not upstream_seq in gene_to_unique_upstream[gene]:
                                 gene_to_unique_upstream[gene][upstream_seq] = len(gene_to_unique_upstream[gene])
+                                new_sequence = True
                             upstream_id = gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq])
                             genome_to_upstream[genome][upstream_id] = 1
                             
-                            ''' Write renamed sequence to temporary file '''
-                            f_nr_ups.write('>' + upstream_id + '\n')
-                            f_nr_ups.write(upstream_seq + '\n')
+                            ''' Write renamed sequence to running file '''
+                            if new_sequence:
+                                f_nr_ups.write('>' + upstream_id + '\n')
+                                f_nr_ups.write(upstream_seq + '\n')
+                                new_sequence = False
 
                         header = line[1:].strip(); upstream_seq = ''
                     else: # sequence line
@@ -555,12 +559,15 @@ def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
                     gene_to_unique_upstream[gene] = {}
                 if not upstream_seq in gene_to_unique_upstream[gene]:
                     gene_to_unique_upstream[gene][upstream_seq] = len(gene_to_unique_upstream[gene])
+                    new_sequence = True
                 upstream_id = gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq])
                 genome_to_upstream[genome][upstream_id] = 1
 
-                ''' Write renamed sequence to temporary file '''
-                f_nr_ups.write('>' + upstream_id + '\n')
-                f_nr_ups.write(upstream_seq + '\n')
+                ''' Write renamed sequence to running file '''
+                if new_sequence:
+                    f_nr_ups.write('>' + upstream_id + '\n')
+                    f_nr_ups.write(upstream_seq + '\n')
+                    new_sequence = False
     
     df_upstream = pd.DataFrame.from_dict(genome_to_upstream)
     return df_upstream
@@ -601,19 +608,8 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
     '''
     
     ''' Load contig sequences '''
-    contigs = {} # header to contig sequence
-    with open(genome_fna, 'r') as f_fna:
-        header = ''; seq = ''
-        for line in f_fna:
-            if line[0] == '>': # header encountered
-                if len(seq) > 0: # save header-seq pair
-                    contigs[header] = seq
-                header = line.split()[0][1:]
-                seq = ''
-            else: # sequence line encountered
-                seq += line.strip()
-        if len(seq) > 0: # process last record
-            contigs[header] = seq
+    contigs = load_sequences_from_fasta(genome_fna, header_fxn=lambda x: x.split()[0])
+    #print 'Contigs:', len(contigs), contigs.keys()
             
     ''' Load header-allele name mapping '''
     map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2])
@@ -794,6 +790,100 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
         table_alleles = set(df_ga.index[pd.notnull(df_ga)])
         test = table_alleles == genome_alleles
         print test, len(table_alleles), len(genome_alleles)
+        
+
+def validate_upstream_table(df_upstream, genome_fna_paths, nr_upstream_fna, limits=(-50,3)):
+    '''
+    Does a partial validation of the upstream x genome table by checking that
+    the recorded upstream sequences are present in the corresponding genome, 
+    and counts start codons observed. DOES NOT check the exact location of the
+    upstream sequences.
+    
+    Parameters
+    ----------
+    df_upstream : pd.DataFrame or str
+        Either the upstream x genome table, or path to the table as CSV or CSV.GZ
+    genome_fna_paths : list
+        Paths to FNAs for each genome's contigs
+    nr_upstream_fna : str
+        Path to FNA with non-redundant upstream sequences per gene
+    limits : 2-tuple
+        Upstream sequence limits specified when extracting upstream sequences (default (-50,3))
+    '''
+    dfu = pd.read_csv(df_upstream, index_col=0) if type(df_upstream) == str else df_upstream
+    
+    ''' Reverse complement function for checking both strands '''
+    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
+                  'W': 'W', 'S': 'S', 'R': 'Y', 'Y': 'R', 
+                  'M': 'K', 'K': 'M', 'N': 'N'}
+    for bp in complement.keys():
+        complement[bp.lower()] = complement[bp].lower()
+    reverse_complement = lambda s: (''.join([complement[base] for base in list(s)]))[::-1]
+    
+    ''' Load non-redundant upstream sequences '''
+    print 'Loading upstream sequences...'
+    nr_upstream = load_sequences_from_fasta(nr_upstream_fna)
+            
+    ''' Verify present of each upstream sequence within each genome '''
+    window = limits[1] - limits[0]
+    for genome_fna in genome_fna_paths:
+        genome_contigs = load_sequences_from_fasta(genome_fna)
+        genome = genome_fna.split('/')[-1][:-4]
+        print 'Evaluating', genome, genome_fna
+        df_gups = dfu.loc[:,genome]
+        table_ups = df_gups.index[pd.notnull(df_gups)] # upstream sequences as defined by the table
+        table_ups_seqs = {nr_upstream[x]:x for x in table_ups} # maps sequences to names
+        
+        ''' Scan all contigs for detected upstream sequences '''
+        for contig in genome_contigs.values():
+            for i in range(len(contig)):
+                segment = contig[i:i+window]
+                if segment in table_ups_seqs: 
+                    table_ups_seqs.pop(segment)
+            rc_contig = reverse_complement(contig)
+            for i in range(len(rc_contig)):
+                segment = rc_contig[i:i+window]
+                if segment in table_ups_seqs: 
+                    table_ups_seqs.pop(segment)
+                    
+        ''' Report undetected upstream sequences '''
+        for ups in table_ups_seqs:
+            print '\tMissing', table_ups_seqs[ups], 'from', genome
+        
+    ''' Count start codons among non-redundant upstream sequences '''
+    if limits[1] >= 3:
+        print 'Computing start codon distribution...'
+        if limits[1] == 3:
+            get_start = lambda x: x[-3:]
+        else:
+            get_start = lambda x: x[-limits[1]:-limits[1]+3]
+        start_codons = map(get_start, nr_upstream.values())
+        print collections.Counter(start_codons)
+    
+
+def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None):
+    ''' Loads sequences from a FAA or FNA file into a dict
+        mapping headers to sequences. Can optionally apply a 
+        function to all header (header_fxn) or to all
+        sequences (seq_fxn). Drops the ">" from all headers,
+        and removes line breaks from sequences. '''
+    header_to_seq = {}
+    with open(fasta, 'r') as f:
+        header = ''; seq = ''
+        for line in f:
+            if line[0] == '>': # header line
+                if len(header) > 0 and len(seq) > 0:
+                    seq = seq_fxn(seq) if seq_fxn else seq
+                    header_to_seq[header] = seq
+                header = line.strip()[1:]
+                header = header_fxn(header) if header_fxn else header
+                seq = ''
+            else: # sequence line
+                seq += line.strip()
+        if len(header) > 0 and len(seq) > 0:
+            seq = seq_fxn(seq) if seq_fxn else seq
+            header_to_seq[header] = seq
+    return header_to_seq
 
                           
 def __get_gene_from_allele__(allele):
