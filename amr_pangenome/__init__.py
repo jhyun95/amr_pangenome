@@ -9,3 +9,4 @@ Created on Fri Mar 13 12:03:57 2020
 
 import pangenome
 import patric
+import amr 
