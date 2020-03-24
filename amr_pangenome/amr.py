@@ -14,6 +14,7 @@ import os
 
 import pandas as pd
 import numpy as np
+import networkx as nx
 
 def run_rgi(fasta_in, rgi_out, rgi_args={'-a':'DIAMOND', '-n':1}, clean_headers=True):
     ''' 
@@ -111,20 +112,80 @@ def build_resistome(rgi_txt, aro_out, df_alleles, map_aros=True, skip_loose=True
     
     return df_rgi, df_aro
     
+
+def construct_aro_to_drug_network(obo_path):
+    '''
+    Constructs a DAG from the CARD ARO, such that there exists a path between 
+    all AMR genes and their specific impacted drugs. This is acheived by loading 
+    all AROs as nodes and adding edges U -> V when:
+    1) U "is_a" V (for AMR genes), or reverse V "is_a" U (for drugs)
+        - Specific AMR gene inherits resistances of general version of gene
+        - Resistance against a drug super class confers resistance to drug members
+    2) U has relationship "part_of" or "regulates" V
+    3) U has relationship "confers_resistance_to_antibiotic" V
+    4) U has relationship "confers_resistance_to_drug_class" V
+    5) V has relationship "has_part" U 
+        - AMR against a constituent drug contributes to AMR against cotherapy
+        
+    Parameters
+    ----------
+    obo_path : str
+        Path to CARD ARO network file, usually named aro.obo
     
+    Returns
+    -------
+    G_full : nx.DiGraph
+        Networkx DiGraph, such that if an AMR gene contributes to resistance against
+        a drug or drug class, there exists a path from the AMR gene ARO to the
+        drug/drug class ARO. Nodes are named ARO:#######. Use with G_full.has_path
+        to check these relationships, or nx.shortest_path to manually check relationships
+    aro_names : dict
+        Dictionary mapping ARO:####### to their names
+    '''
     
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    ''' First identify drug vs gene AROs through connectivity to ARO:1000003 '''
+    G_isa = nx.DiGraph(); aro_names = {}
+    with open(obo_path, 'r') as f:
+        for line in f:
+            if line[:8] == 'id: ARO:': # new ARO encountered
+                last_aro = line.strip().split()[1]
+                G_isa.add_node(last_aro)
+            elif line[:5] == 'name:': # name for current ARO encoutnered
+                aro_names[last_aro] = line[6:].strip()
+            elif line[:5] == 'is_a:': # "is_a" field encountered
+                target_aro = line.strip().split()[1]
+                G_isa.add_edge(target_aro, last_aro)
+            elif line.strip() == '[Typedef]': # end of new ARO terms
+                break
+    #G_isa.remove_node('ARO:1000001') # root node, links all genes and drugs when present
+    drug_aros = nx.descendants(G_isa, 'ARO:1000003') # ARO for “antibiotic molecule”
+    drug_aros.add('ARO:1000003')
+
+    ''' Next create the full ontology '''
+    G_full = nx.DiGraph()
+    valid_relationships = ['part_of', 'regulates', 'confers_resistance_to_antibiotic', 'confers_resistance_to_drug_class']
+    with open(obo_path, 'r') as f:
+        for line in f:
+            if line[:8] == 'id: ARO:': # new ARO encountered
+                last_aro = line.strip().split()[1]
+                G_full.add_node(last_aro)
+            elif line[:5] == 'is_a:': # "is_a" field encountered
+                target_aro = line.strip().split()[1]
+                if last_aro in drug_aros: # for drugs, build edge drug <- drug superclass
+                    G_full.add_edge(target_aro, last_aro)
+                else: # for AMR genes, build edge AMR gene -> AMR gene superclass
+                    G_full.add_edge(last_aro, target_aro)
+            elif line[:13] == 'relationship:': # relationship field encountered
+                data = line.split()
+                relationship_type = data[1].strip()
+                target_aro = data[2]
+                if relationship_type in valid_relationships:
+                    G_full.add_edge(last_aro, target_aro)
+                elif relationship_type == 'has_part':
+                    G_full.add_edge(target_aro, last_aro)
+            elif line.strip() == '[Typedef]': # end of new ARO terms
+                break
+    G_full.remove_node('ARO:1000001') # root node, links all genes and drugs when present
+    return G_full, aro_names
     
     
