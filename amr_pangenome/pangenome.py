@@ -7,6 +7,7 @@ Created on Thu Mar 12 10:18:29 2020
 
 Pan-genome construction tools including consolidating redundant sequences,
 gene sequence cluster identification by CD-Hit, and constructing gene/allele tables.
+Refer to build_cds_pangenome() and build_upstream_pangenome().
 """
 
 import os
@@ -16,6 +17,7 @@ import collections
 
 import pandas as pd
 import numpy as np
+import scipy.sparse
 
 def build_cds_pangenome(genome_faa_paths, output_dir, name='Test', 
                         cdhit_args={'-n':5, '-c':0.8}, fastasort_path=None):
@@ -93,7 +95,7 @@ def build_cds_pangenome(genome_faa_paths, output_dir, name='Test',
     output_allele_table = output_allele_table.replace('//','/')
     output_gene_table = output_gene_table.replace('//','/')
     df_alleles, df_genes = build_genetic_feature_tables(output_nr_clstr, genome_faa_paths, 
-                              output_allele_table, output_gene_table, 
+                              name, output_allele_table, output_gene_table, 
                               header_to_allele=header_to_allele)
     return df_alleles, df_genes
     
@@ -285,8 +287,9 @@ def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_
     return header_to_allele
     
 
-def build_genetic_feature_tables(clstr_file, genome_faa_paths, allele_table_out=None, gene_table_out=None,
-                                 shared_header_file=None, header_to_allele=None):
+def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', allele_table_out=None, 
+                                 gene_table_out=None, shared_header_file=None, header_to_allele=None,
+                                 use_sparse=False):
     '''
     Builds two binary tables based on the presence/absence of genetic features, 
     allele x genome (allele_table_out) and gene x genome (gene_table_out). 
@@ -299,28 +302,138 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, allele_table_out=
         Path to CD-Hit CLSTR file used to build header-allele mappings
     genome_faa_paths : list
         Paths to genome FAA files originally combined and clustered (see consolidate_cds)
+    name : str
+        Name to attach to features and files (default 'Test')
     allele_table_out : str
-        Output path for binary allele x genome table, expect CSV or CSV.GZ (default None)
+        Output path for binary allele x genome table (default None)
     gene_table_out : str
-        Output path for binary gene x genome table, expect CSV or CSV.GZ (default None)
+        Output path for binary gene x genome table (default None)
     shared_header_file : str
         Path to shared header TSV file, if synonym headers are not mapped
         in header_to_allele or header_to_allele is not provided (default None)
     header_to_allele : dict
         Pre-calculated header-allele mappings corresponding to clstr_file,
         if available from rename_genes_and_alleles (default None)
+    use_sparse : bool
+        Construcs and returns pd.SparseDataFrame if True, slower (default False)
 
     Returns 
     -------
-    df_alleles : pd.DataFrame
+    df_alleles : pd.DataFrame or pd.SparseDataFrame
         Binary allele x genome table
-    df_genes : pd.DataFrame
+    df_genes : pd.DataFrame or pd.SparseDataFrame
         Binary gene x genome table
+    '''
+    
+    ''' Load header-allele mappings '''
+    print 'Loadings header-allele mappings...'
+    header_to_allele = load_header_to_allele(clstr_file, shared_header_file, header_to_allele)
+                    
+    ''' Initialize gene and allele tables '''
+    faa_to_genome = lambda x: x.split('/')[-1][:-4]
+    genome_order = sorted([faa_to_genome(x) for x in genome_faa_paths]) # for genome names, trim .faa from filenames
+    print 'Sorting alleles...'
+    allele_order = sorted(header_to_allele.values()) 
+    
+    print 'Sorting genes...'
+    gene_order = []; last_gene = None
+    for allele in allele_order:
+        gene = __get_gene_from_allele__(allele)
+        if gene != last_gene:
+            gene_order.append(gene)
+            last_gene = gene
+    print 'Genomes:', len(genome_order)
+    print 'Alleles:', len(allele_order)
+    print 'Genes:', len(gene_order)
+        
+    ''' To use sparse matrix, map genomes, alleles, and genes to positions '''
+    allele_indices = {allele_order[i]:i for i in range(len(allele_order))}
+    allele_table = scipy.sparse.dok_matrix( (len(allele_order), len(genome_order)) )
+    gene_indices = {gene_order[i]:i for i in range(len(gene_order))}
+    gene_table = scipy.sparse.dok_matrix( (len(gene_order), len(genome_order)) )
+
+    ''' Scan original genome file for allele and gene membership '''
+    for i, genome_faa in enumerate(sorted(genome_faa_paths)):
+        genome = faa_to_genome(genome_faa)
+        genome_i = genome_order.index(genome)
+        genome_alleles = set(); genome_genes = set()
+        with open(genome_faa, 'r') as f_faa:
+            header = ''; seq = '' # track the sequence to skip over empty sequences
+            for line in f_faa.readlines():
+                ''' Load all alleles and genes per genome '''
+                if line[0] == '>': # new header line encountered
+                    if len(seq) > 0:
+                        allele = header_to_allele[header]
+                        allele_i = allele_indices[allele]
+                        allele_table[allele_i, genome_i] = 1.0
+                        gene = __get_gene_from_allele__(allele)
+                        gene_i = gene_indices[gene]
+                        gene_table[gene_i, genome_i] = 1.0
+                        genome_alleles.add(allele)
+                        genome_genes.add(gene)
+                    header = __get_header_from_fasta_line__(line)
+                    seq = '' # reset sequence
+                else: # sequence line encountered
+                    seq += line.strip()
+            if len(seq) > 0: # process last record
+                allele = header_to_allele[header]
+                allele_i = allele_indices[allele]
+                allele_table[allele_i, genome_i] = 1.0
+                gene = __get_gene_from_allele__(allele)
+                gene_i = gene_indices[gene]
+                gene_table[gene_i, genome_i] = 1.0
+                genome_alleles.add(allele)
+                genome_genes.add(gene)
+            print 'Updating genome', i+1, ':', genome, 
+            print '\tAlleles:', len(genome_alleles), '\tGenes:', len(genome_genes)
+
+    ''' Construct SparseDataFrame '''
+    if use_sparse:
+        print 'Building SparseDataFrame...'
+        df_alleles = pd.SparseDataFrame(allele_table, index=allele_order, columns=genome_order)
+        df_genes = pd.SparseDataFrame(gene_table, index=gene_order, columns=genome_order)
+        # df_alleles = pd.DataFrame(data=allele_table, index=allele_order, columns=genome_order).to_sparse()
+        # df_genes = pd.DataFrame(data=gene_table, index=gene_order, columns=genome_order).to_sparse()
+    else:
+        print 'Building DataFrame...'
+        df_alleles = pd.DataFrame(allele_table.todense(), index=allele_order, columns=genome_order)
+        df_genes = pd.DataFrame(gene_table.todense(), index=gene_order, columns=genome_order)
+    
+    if allele_table_out:
+        df_alleles.to_csv(allele_table_out)
+    if gene_table_out:
+        df_genes.to_csv(gene_table_out)
+    return df_alleles, df_genes
+
+
+def load_header_to_allele(clstr_file=None, shared_header_file=None, header_to_allele=None, name='Test'):
+    '''
+    Loads a mapping from original fasta headers to allele names format name_C#A#.
+    
+    Parameters
+    ----------
+    clstr_file : str
+        Path to CD-Hit CLSTR file used to build header-allele mappings,
+        only needed if header_to_allele is None (default None)
+    shared_header_file : str
+        Path to shared header TSV file, if synonym headers are not mapped
+        in header_to_allele or header_to_allele is not provided (default None)
+    header_to_allele : dict
+        Pre-calculated header-allele mappings corresponding to clstr_file,
+        if available from rename_genes_and_alleles (default None)
+    name : str
+        Name to attach to features and files (default 'Test')
+        
+    Returns
+    -------
+    full_header_to_allele : dict
+        Full header-allele mappings combining contents of both header_to_allele 
+        (copied or built from clstr_file) and shared_header_file.
     '''
     
     ''' Load header to allele mapping from CLSTR, if not provided '''
     if header_to_allele is None:
-        header_to_allele = {} # maps representative header to allele name (name_C#A#)
+        full_header_to_allele = {} # maps representative header to allele name (name_C#A#)
         with open(clstr_file, 'r') as f_clstr:
             for line in f_clstr:
                 if line[0] == '>': # starting new gene cluster
@@ -331,76 +444,22 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, allele_table_out=
                     allele_num = data[0] # allele number as string
                     allele_header = data[2][1:-3] # old allele header
                     allele_name = name + '_C' + cluster_num + 'A' + allele_num # new short header
-                    header_to_allele[allele_header] = allele_name
+                    full_header_to_allele[allele_header] = allele_name
+    elif type(header_to_allele) == dict:
+        full_header_to_allele = header_to_allele.copy()
     
     ''' Load headers that share the same sequence '''
-    shared_header_to_allele = {} # same format as header_to_allele
     if shared_header_file:
         with open(shared_header_file, 'r') as f_header:
             for line in f_header:
                 headers = [x.strip() for x in line.split('\t')]
                 if len(headers) > 1:
                     repr_header = headers[0]
-                    repr_allele = header_to_allele[repr_header]
+                    repr_allele = full_header_to_allele[repr_header]
                     for alt_header in headers[1:]:
-                        shared_header_to_allele[alt_header] = repr_allele
-                    
-    ''' Initialize gene and allele tables '''
-    faa_to_genome = lambda x: x.split('/')[-1][:-4]
-    genome_order = sorted([faa_to_genome(x) for x in genome_faa_paths]) # for genome names, trim .faa from filenames
-    print 'Sorting alleles...'
-    allele_order = sorted(header_to_allele.values()) 
-    df_alleles = pd.DataFrame(index=allele_order, columns=genome_order)
-    print 'Sorting genes...'
-    gene_order = []; last_gene = None
-    for allele in allele_order:
-        gene = __get_gene_from_allele__(allele)
-        if gene != last_gene:
-            gene_order.append(gene)
-            last_gene = gene
-    df_genes = pd.DataFrame(index=gene_order, columns=genome_order)
-    print 'Genomes:', len(genome_order)
-    print 'Alleles:', len(allele_order)
-    print 'Genes:', len(gene_order)
-        
-    ''' Scan original genome file for allele and gene membership '''
-    for i, genome_faa in enumerate(sorted(genome_faa_paths)):
-        genome = faa_to_genome(genome_faa)
-        genome_alleles = set(); genome_genes = set()
-        with open(genome_faa, 'r') as f_faa:
-            header = ''; seq = '' # track the sequence to skip over empty sequences
-            for line in f_faa:
-                ''' Load all alleles and genes per genome '''
-                if line[0] == '>': # new header line encountered
-                    if len(seq) > 0:
-                        allele = header_to_allele[header] if header in header_to_allele \
-                            else shared_header_to_allele[header]
-                        gene = __get_gene_from_allele__(allele)
-                        genome_alleles.add(allele)
-                        genome_genes.add(gene)
-                    header = __get_header_from_fasta_line__(line)
-                    seq = '' # reset sequence
-                else: # sequence line encountered
-                    seq += line.strip()
-            if len(seq) > 0: # process last record
-                allele = header_to_allele[header] if header in header_to_allele \
-                    else shared_header_to_allele[header]
-                gene = __get_gene_from_allele__(allele)
-                genome_alleles.add(allele)
-                genome_genes.add(gene)
-                    
-            ''' Save to running table  '''
-            print 'Updating genome', i+1, ':', genome, 
-            print '\tAlleles:', len(genome_alleles), '\tGenes:', len(genome_genes)
-            df_alleles.loc[genome_alleles, genome] = 1
-            df_genes.loc[genome_genes, genome] = 1
+                        full_header_to_allele[alt_header] = repr_allele
+    return full_header_to_allele
     
-    if allele_table_out:
-        df_alleles.to_csv(allele_table_out)
-    if gene_table_out:
-        df_genes.to_csv(gene_table_out)
-    return df_alleles, df_genes
-
 
 def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,3), name='Test', 
                              include_fragments=False, fastasort_path=None):
@@ -739,6 +798,7 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
         Path to non-redundant sequences corresponding to df_alleles
     '''
     dfa = pd.read_csv(df_alleles, index_col=0) if type(df_alleles) == str else df_alleles
+    inconsistencies = 0
     
     ''' Pre-load hashes for non-redundant protein sequences '''
     print 'Loading non-redundant sequences...'
@@ -789,7 +849,9 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
         df_ga = dfa.loc[:,genome]
         table_alleles = set(df_ga.index[pd.notnull(df_ga)])
         test = table_alleles == genome_alleles
+        inconsistencies += (1 - int(test))
         print test, len(table_alleles), len(genome_alleles)
+    print 'Inconsistencies:', inconsistencies
         
 
 def validate_upstream_table(df_upstream, genome_fna_paths, nr_upstream_fna, limits=(-50,3)):
@@ -885,6 +947,28 @@ def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None):
             header_to_seq[header] = seq
     return header_to_seq
 
+
+def __create_sparse_data_frame__(sparse_array, index, columns):
+    ''' 
+    Creates a SparseDataFrame from a scipy.sparse matrix by initializing 
+    individual columns as SparseSeries, then concatenating them. 
+    Sometimes faster than native SparseDataFrame initialization? Known issues: 
+    
+    - Direct initialization is slow in v0.24.2, see https://github.com/pandas-dev/pandas/issues/16773
+    - Empty SparseDataFrame initialization time scales quadratically with number of columns
+    - Initializing as dense and converting sparse uses more memory than directly making sparse
+    '''
+    n_row, n_col = sparse_array.shape
+    X = sparse_array.T if n_row < n_col else sparse_array # make n_col < n_row
+    sparse_cols = []
+    for i in range(X.shape[1]): # create columns individually
+        sparse_col = pd.SparseSeries.from_coo(scipy.sparse.coo_matrix(X[:,i]), dense_index=True)
+        sparse_cols.append(sparse_col)
+    df = pd.concat(sparse_cols, axis=1)
+    df = df.T if n_row < n_col else df # transpose back if n_col > n_row originally
+    df.index = pd.Index(index)
+    df.columns = pd.Index(columns)
+    return df
                           
 def __get_gene_from_allele__(allele):
     ''' Converts <name>_C#A# allele to <name>_C# gene '''
