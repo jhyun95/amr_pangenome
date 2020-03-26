@@ -28,9 +28,11 @@ def build_cds_pangenome(genome_faa_paths, output_dir, name='Test',
     3) Rename non-redundant CDS as <name>_C#A#, referring to cluster and allele number
     4) Compile allele/gene membership into binary allele x genome and gene x genome tables
     
-    Generates six files within output_dir:
-    1) <name>_strain_by_allele.csv.gz, binary allele x genome table
-    2) <name>_strain_by_gene.csv.gz, binary gene x genome table
+    Generates eight files within output_dir:
+    1) <name>_strain_by_allele.pickle.gz, binary allele x genome table with SparseArray structure
+    2) <name>_strain_by_gene.pickle.gz, binary gene x genome table with SparseArray structure
+    1) <name>_strain_by_allele.csv.gz, binary allele x genome table as flat file
+    2) <name>_strain_by_gene.csv.gz, binary gene x genome table as flat file
     3) <name>_nr.faa, all non-redundant CDSs observed, with headers <name>_C#A#
     4) <name>_nr.faa.cdhit.clstr, CD-Hit output file from clustering
     5) <name>_allele_names.tsv, mapping between <name>_C#A# to original CDS headers
@@ -89,14 +91,28 @@ def build_cds_pangenome(genome_faa_paths, output_dir, name='Test',
                                                 fastasort_path=fastasort_path)
     # maps original headers to short names <name>_C#A#
     
-    ''' Process gene/allele membership into binary tables '''
-    output_allele_table = output_dir + '/' + name + '_strain_by_allele.csv.gz'
-    output_gene_table = output_dir + '/' + name + '_strain_by_gene.csv.gz'
+    ''' Process gene/allele membership into binary tables '''    
+    df_alleles, df_genes = build_genetic_feature_tables(output_nr_clstr, genome_faa_paths, 
+                              name, header_to_allele=header_to_allele)
+    
+    ''' Save tables as PICKLE.GZ (preserve SparseArrays) and CSV.GZ (backup flat file) '''
+    output_allele_table = output_dir + '/' + name + '_strain_by_allele'
+    output_gene_table = output_dir + '/' + name + '_strain_by_gene'
     output_allele_table = output_allele_table.replace('//','/')
     output_gene_table = output_gene_table.replace('//','/')
-    df_alleles, df_genes = build_genetic_feature_tables(output_nr_clstr, genome_faa_paths, 
-                              name, output_allele_table, output_gene_table, 
-                              header_to_allele=header_to_allele)
+    output_allele_csv = output_allele_table + '.csv.gz'
+    output_gene_csv = output_gene_table + '.csv.gz'
+    output_allele_pickle = output_allele_table + '.pickle.gz'
+    output_gene_pickle = output_gene_table + '.pickle.gz'
+    print 'Saving', output_allele_pickle, '...'
+    df_alleles.to_pickle(output_allele_pickle)
+    print 'Saving', output_allele_csv, '...'
+    df_alleles.to_csv(output_allele_csv)
+    print 'Saving', output_gene_pickle, '...'
+    df_genes.to_pickle(output_gene_pickle)
+    print 'Saving', output_gene_csv, '...'
+    df_alleles.to_csv(output_gene_csv)
+    
     return df_alleles, df_genes
     
 
@@ -287,8 +303,8 @@ def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_
     return header_to_allele
     
 
-def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', allele_table_out=None, 
-                                 gene_table_out=None, shared_header_file=None, header_to_allele=None):
+def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', 
+                                 shared_header_file=None, header_to_allele=None):
     '''
     Builds two binary tables based on the presence/absence of genetic features, 
     allele x genome (allele_table_out) and gene x genome (gene_table_out). 
@@ -303,10 +319,6 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', alle
         Paths to genome FAA files originally combined and clustered (see consolidate_cds)
     name : str
         Name to attach to features and files (default 'Test')
-    allele_table_out : str
-        Output path for binary allele x genome table (default None)
-    gene_table_out : str
-        Output path for binary gene x genome table (default None)
     shared_header_file : str
         Path to shared header TSV file, if synonym headers are not mapped
         in header_to_allele or header_to_allele is not provided (default None)
@@ -390,11 +402,6 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', alle
     print 'Building DataFrame...'
     df_alleles = pd.DataFrame(data=allele_arrays, index=allele_order)
     df_genes = pd.DataFrame(data=gene_arrays, index=gene_order)
-    
-    if allele_table_out:
-        df_alleles.to_csv(allele_table_out)
-    if gene_table_out:
-        df_genes.to_csv(gene_table_out)
     return df_alleles, df_genes
 
 
@@ -493,12 +500,13 @@ def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,
     ''' Load header-allele name mapping '''
     print 'Loading header-allele mapping...'
     feature_to_allele = {}
+    map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2]) # filter out locus tags
     with open(allele_names, 'r') as f_all:
         for line in f_all:
             data = line.strip().split('\t')
             allele = data[0]; synonyms = data[1:]
             for synonym in synonyms:
-                feature_to_allele[synonym] = allele
+                feature_to_allele[map_feature_to_gffid(synonym)] = allele
         
     ''' Generate upstream sequences '''
     print 'Extracting upstream sequences...'
@@ -522,8 +530,6 @@ def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,
         
     ''' Consolidate non-redundant upstream sequences per gene '''
     print 'Identifying non-redundant upstream sequences per gene...'
-    map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2]) # filter out locus tags
-    feature_to_allele = {map_feature_to_gffid(k):v for k,v in feature_to_allele.items()}
     nr_upstream_out = output_dir + '/' + name + '_nr_upstream.fna'
     nr_upstream_out = nr_upstream_out.replace('//','/')
     df_upstream = consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele)
@@ -537,9 +543,14 @@ def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,
         os.rename(nr_upstream_out + '.tmp', nr_upstream_out)
         
     ''' Save upstream x genome table '''
-    upstream_table_out = output_dir + '/' + name + '_strain_by_upstream.csv.gz'
+    upstream_table_out = output_dir + '/' + name + '_strain_by_upstream'
     upstream_table_out = upstream_table_out.replace('//','/')
-    df_upstream.to_csv(upstream_table_out)
+    upstream_table_pickle = upstream_table_out + '.pickle.gz'
+    upstream_table_csv = upstream_table_out + '.csv.gz'
+    print 'Saving', upstream_table_pickle, '...'
+    df_upstream.to_pickle(upstream_table_pickle)
+    print 'Saving', upstream_table_csv, '...'
+    df_upstream.to_csv(upstream_table_csv)
     return df_upstream
     
 
@@ -566,18 +577,21 @@ def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
     '''
     gene_to_unique_upstream = {} # maps gene:upstream_seq:upstream_seq_id (int)
     genome_to_upstream = {} # maps genome:upstream_name:1 if present (<name>_C#U#)
+    unique_upstream_ids = set() # record non-redundant list of upstream sequence IDs <name>_C#U#
+    genome_order = [] # sorted list of genomes inferred from upstream file names
     
     with open(nr_upstream_out, 'w+') as f_nr_ups:
-        for genome_upstream in genome_upstreams:
+        for genome_upstream in sorted(genome_upstreams):
             ''' Infer genome name from genome filename '''
             genome = genome_upstream.split('/')[-1] # trim off full path
             genome = genome.split('_upstream')[0] # remove _upstream.fna footer
             genome_to_upstream[genome] = {}
+            genome_order.append(genome)
             
             ''' Process genome's upstream record '''
             with open(genome_upstream, 'r') as f_ups: # reading current upstream
                 header = ''; upstream_seq = ''; new_sequence = False
-                for line in f_ups:
+                for line in f_ups.readlines(): # slight speed up reading whole file at once, should only be few MBs
                     if line[0] == '>': # header line
                         if len(upstream_seq) > 0:
                             ''' Process header-seq to non-redundant <name>_C#U# upstream allele '''
@@ -588,6 +602,7 @@ def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
                                 gene_to_unique_upstream[gene] = {}
                             if not upstream_seq in gene_to_unique_upstream[gene]:
                                 gene_to_unique_upstream[gene][upstream_seq] = len(gene_to_unique_upstream[gene])
+                                unique_upstream_ids.add(gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq]))
                                 new_sequence = True
                             upstream_id = gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq])
                             genome_to_upstream[genome][upstream_id] = 1
@@ -610,6 +625,7 @@ def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
                     gene_to_unique_upstream[gene] = {}
                 if not upstream_seq in gene_to_unique_upstream[gene]:
                     gene_to_unique_upstream[gene][upstream_seq] = len(gene_to_unique_upstream[gene])
+                    unique_upstream_ids.add(gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq]))
                     new_sequence = True
                 upstream_id = gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq])
                 genome_to_upstream[genome][upstream_id] = 1
@@ -619,8 +635,22 @@ def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
                     f_nr_ups.write('>' + upstream_id + '\n')
                     f_nr_ups.write(upstream_seq + '\n')
                     new_sequence = False
-    
-    df_upstream = pd.DataFrame.from_dict(genome_to_upstream)
+                    
+    ''' Convert nested dict to dict of genome:SparseArrays once all upstream sequences are known '''
+    print 'Sparsifying upstream table...'
+    upstream_order = sorted(list(unique_upstream_ids))
+    del unique_upstream_ids
+    upstream_indices = {upstream_order[i]:i for i in range(len(upstream_order))} # map upstream ID to index
+    for g,genome in enumerate(genome_order):
+        upstream_array = np.zeros(shape=len(upstream_order), dtype='int64')
+        for genome_ups in genome_to_upstream[genome].keys():
+            ups_i = upstream_indices[genome_ups]
+            upstream_array[ups_i] = 1
+        genome_to_upstream[genome] = pd.SparseArray(upstream_array)
+        genome_to_upstream[genome].fill_value = np.nan
+        
+    print 'Constructing DataFrame...'
+    df_upstream = pd.DataFrame(data=genome_to_upstream, index=upstream_order)
     return df_upstream
 
                 
@@ -660,12 +690,11 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
     
     ''' Load contig sequences '''
     contigs = load_sequences_from_fasta(genome_fna, header_fxn=lambda x: x.split()[0])
-    #print 'Contigs:', len(contigs), contigs.keys()
             
     ''' Load header-allele name mapping '''
     map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2])
     if feature_to_allele: # dictionary provided directly
-        feat_to_allele = {map_feature_to_gffid(k):v for k,v in feature_to_allele.items()}
+        feat_to_allele = feature_to_allele
     elif allele_names: # allele map file provided
         feat_to_allele = {}
         with open(allele_names, 'r') as f_all:
@@ -745,7 +774,6 @@ def validate_gene_table(df_genes, df_alleles):
     clusters_tested = 0; inconsistencies = 0
     for allele_row in dfa.fillna(0).itertuples(name=None):
         cluster = __get_gene_from_allele__(allele_row[0])
-
         if current_cluster is None: # initializing
             current_cluster = cluster
         elif current_cluster != cluster: # end of gene cluster
