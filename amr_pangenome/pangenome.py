@@ -288,8 +288,7 @@ def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_
     
 
 def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', allele_table_out=None, 
-                                 gene_table_out=None, shared_header_file=None, header_to_allele=None,
-                                 use_sparse=False):
+                                 gene_table_out=None, shared_header_file=None, header_to_allele=None):
     '''
     Builds two binary tables based on the presence/absence of genetic features, 
     allele x genome (allele_table_out) and gene x genome (gene_table_out). 
@@ -314,14 +313,12 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', alle
     header_to_allele : dict
         Pre-calculated header-allele mappings corresponding to clstr_file,
         if available from rename_genes_and_alleles (default None)
-    use_sparse : bool
-        Construcs and returns pd.SparseDataFrame if True, slower (default False)
 
     Returns 
     -------
-    df_alleles : pd.DataFrame or pd.SparseDataFrame
+    df_alleles : pd.DataFrame
         Binary allele x genome table
-    df_genes : pd.DataFrame or pd.SparseDataFrame
+    df_genes : pd.DataFrame
         Binary gene x genome table
     '''
     
@@ -333,7 +330,7 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', alle
     faa_to_genome = lambda x: x.split('/')[-1][:-4]
     genome_order = sorted([faa_to_genome(x) for x in genome_faa_paths]) # for genome names, trim .faa from filenames
     print 'Sorting alleles...'
-    allele_order = sorted(header_to_allele.values()) 
+    allele_order = sorted(list(set(header_to_allele.values())))
     
     print 'Sorting genes...'
     gene_order = []; last_gene = None
@@ -348,15 +345,16 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', alle
         
     ''' To use sparse matrix, map genomes, alleles, and genes to positions '''
     allele_indices = {allele_order[i]:i for i in range(len(allele_order))}
-    allele_table = scipy.sparse.dok_matrix( (len(allele_order), len(genome_order)) )
-    gene_indices = {gene_order[i]:i for i in range(len(gene_order))}
-    gene_table = scipy.sparse.dok_matrix( (len(gene_order), len(genome_order)) )
+    gene_indices = {gene_order[i]:i for i in range(len(gene_order))}   
+    allele_arrays = {} # maps genome:allele vectors as SparseArrays
+    gene_arrays = {} # maps genome:gene vector as SparseArrays
 
     ''' Scan original genome file for allele and gene membership '''
     for i, genome_faa in enumerate(sorted(genome_faa_paths)):
         genome = faa_to_genome(genome_faa)
         genome_i = genome_order.index(genome)
-        genome_alleles = set(); genome_genes = set()
+        allele_arrays[genome] = np.zeros(shape=len(allele_order), dtype='int64')
+        gene_arrays[genome] = np.zeros(shape=len(gene_order), dtype='int64')
         with open(genome_faa, 'r') as f_faa:
             header = ''; seq = '' # track the sequence to skip over empty sequences
             for line in f_faa.readlines():
@@ -365,12 +363,10 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', alle
                     if len(seq) > 0:
                         allele = header_to_allele[header]
                         allele_i = allele_indices[allele]
-                        allele_table[allele_i, genome_i] = 1.0
+                        allele_arrays[genome][allele_i] = 1
                         gene = __get_gene_from_allele__(allele)
                         gene_i = gene_indices[gene]
-                        gene_table[gene_i, genome_i] = 1.0
-                        genome_alleles.add(allele)
-                        genome_genes.add(gene)
+                        gene_arrays[genome][gene_i] = 1
                     header = __get_header_from_fasta_line__(line)
                     seq = '' # reset sequence
                 else: # sequence line encountered
@@ -378,26 +374,22 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test', alle
             if len(seq) > 0: # process last record
                 allele = header_to_allele[header]
                 allele_i = allele_indices[allele]
-                allele_table[allele_i, genome_i] = 1.0
+                allele_arrays[genome][allele_i] = 1
                 gene = __get_gene_from_allele__(allele)
                 gene_i = gene_indices[gene]
-                gene_table[gene_i, genome_i] = 1.0
-                genome_alleles.add(allele)
-                genome_genes.add(gene)
-            print 'Updating genome', i+1, ':', genome, 
-            print '\tAlleles:', len(genome_alleles), '\tGenes:', len(genome_genes)
-
-    ''' Construct SparseDataFrame '''
-    if use_sparse:
-        print 'Building SparseDataFrame...'
-        df_alleles = pd.SparseDataFrame(allele_table, index=allele_order, columns=genome_order)
-        df_genes = pd.SparseDataFrame(gene_table, index=gene_order, columns=genome_order)
-        # df_alleles = pd.DataFrame(data=allele_table, index=allele_order, columns=genome_order).to_sparse()
-        # df_genes = pd.DataFrame(data=gene_table, index=gene_order, columns=genome_order).to_sparse()
-    else:
-        print 'Building DataFrame...'
-        df_alleles = pd.DataFrame(allele_table.todense(), index=allele_order, columns=genome_order)
-        df_genes = pd.DataFrame(gene_table.todense(), index=gene_order, columns=genome_order)
+                gene_arrays[genome][gene_i] = 1
+                
+        allele_arrays[genome] = pd.SparseArray(allele_arrays[genome])
+        gene_arrays[genome] = pd.SparseArray(gene_arrays[genome])
+        allele_arrays[genome].fill_value = np.nan
+        gene_arrays[genome].fill_value = np.nan
+        print 'Updating genome', i+1, ':', genome, 
+        print '\tAlleles:', allele_arrays[genome].sum(), '\tGenes:', gene_arrays[genome].sum()
+        
+    ''' Construct DataFrame '''
+    print 'Building DataFrame...'
+    df_alleles = pd.DataFrame(data=allele_arrays, index=allele_order)
+    df_genes = pd.DataFrame(data=gene_arrays, index=gene_order)
     
     if allele_table_out:
         df_alleles.to_csv(allele_table_out)
