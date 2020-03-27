@@ -752,22 +752,53 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
                                 upstream_count += 1
                                    
     print 'Loaded upstream sequences:', upstream_count
-
+    
 
 def validate_gene_table(df_genes, df_alleles):
     '''
     Verifies that the gene x genome table is consistent with the
-    corresponding allele x genome table.
+    corresponding allele x genome table. Optimized to run column-by-column
+    rather than gene-by-gene for sparse tables.
     
     Parameters
     ----------
     df_genes : pd.DataFrame or str
-        Either the gene x genome table, or path to the table as CSV or CSV.GZ
+        Either the gene x genome table, or path to the table
     df_alleles : pd.DataFrame or str
-        Either the allele x genome table, or path to the table as CSV or CSV.GZ
+        Either the allele x genome table, or path to the table
     '''
-    dfg = pd.read_csv(df_genes, index_col=0) if type(df_genes) == str else df_genes
-    dfa = pd.read_csv(df_alleles, index_col=0) if type(df_alleles) == str else df_alleles
+    dfg = __load_feature_table__(df_genes)
+    dfa = __load_feature_table__(df_alleles)
+    print 'Validating gene clusters...'
+    num_inconsistencies = 0
+    for g,genome in enumerate(df_genes.columns):
+        print g+1, 'Testing', genome
+        genes = set(dfg[genome].dropna().index)
+        alleles = dfa[genome].dropna().index
+        allele_genes = set(alleles.map(__get_gene_from_allele__))
+        if genes != allele_genes:
+            inconsistencies = genes.symmetric_difference(allele_genes)
+            print '\tInconsistent:', inconsistencies
+            num_inconsistencies += len(inconsistencies)
+    
+    print 'Total Inconsistencies:', num_inconsistencies 
+
+
+def validate_gene_table_dense(df_genes, df_alleles):
+    '''
+    Verifies that the gene x genome table is consistent with the
+    corresponding allele x genome table. Original approach for
+    when df_genes and df_alleles are dense DataFrames.
+    
+    Parameters
+    ----------
+    df_genes : pd.DataFrame or str
+        Either the gene x genome table, or path to the table
+    df_alleles : pd.DataFrame or str
+        Either the allele x genome table, or path to the table
+    '''
+    dfg = __load_feature_table__(df_genes)
+    dfa = __load_feature_table__(df_alleles)
     print 'Validating gene clusters...'
     
     current_cluster = None; allele_data = []; 
@@ -817,7 +848,7 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
     alleles_faa : str
         Path to non-redundant sequences corresponding to df_alleles
     '''
-    dfa = pd.read_csv(df_alleles, index_col=0) if type(df_alleles) == str else df_alleles
+    dfa = __load_feature_table__(df_alleles)
     inconsistencies = 0
     
     ''' Pre-load hashes for non-redundant protein sequences '''
@@ -892,7 +923,7 @@ def validate_upstream_table(df_upstream, genome_fna_paths, nr_upstream_fna, limi
     limits : 2-tuple
         Upstream sequence limits specified when extracting upstream sequences (default (-50,3))
     '''
-    dfu = pd.read_csv(df_upstream, index_col=0) if type(df_upstream) == str else df_upstream
+    dfu = __load_feature_table__(df_upstream)
     
     ''' Reverse complement function for checking both strands '''
     complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
@@ -966,6 +997,22 @@ def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None):
             seq = seq_fxn(seq) if seq_fxn else seq
             header_to_seq[header] = seq
     return header_to_seq
+
+def __load_feature_table__(feature_table):
+    ''' 
+    Loads DataFrames from CSV, CSV.GZ, PICKLE, or PICKLE.GZ.
+    Uses index_col=0 for CSVs. Returns feature_table if provided 
+    with anything other than a string.
+    '''
+    if type(feature_table) == str: # path provided
+        if feature_table[-4:].lower() == '.csv' or feature_table[-7:].lower() == '.csv.gz':
+            return pd.read_csv(feature_table, index_col=0)
+        elif feature_table[-7:].lower() == '.pickle' or feature_table[-10:].lower() == '.pickle.gz':
+            return pd.read_pickle(feature_table)
+        else:
+            return feature_table
+    else: # non-string input
+        return feature_table
 
 
 def __create_sparse_data_frame__(sparse_array, index, columns):
