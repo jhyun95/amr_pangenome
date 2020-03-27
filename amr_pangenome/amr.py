@@ -5,7 +5,7 @@ Created on Tue Mar 17 18:43:05 2020
 
 @author: jhyun95
 
-Scripts for managing AMR annotation (not analysis), primarily 
+Scripts for managing AMR annotation (not analysis), including 
 a wrapper for CARD's RGI tool.
 """
 
@@ -15,6 +15,7 @@ import os
 import pandas as pd
 import numpy as np
 import networkx as nx
+
 
 def run_rgi(fasta_in, rgi_out, rgi_args={'-a':'DIAMOND', '-n':1}, clean_headers=True):
     ''' 
@@ -55,31 +56,34 @@ def run_rgi(fasta_in, rgi_out, rgi_args={'-a':'DIAMOND', '-n':1}, clean_headers=
     
     if clean_headers: # delete temporary fasta
         os.remove(fasta_tmp)
+
         
-def build_resistome(rgi_txt, aro_out, df_alleles, map_aros=True, skip_loose=True):
+def build_resistome(rgi_txt, drugs, G_aro, skip_loose=True):
     '''
     Processes the generated txt file after running RGI on a non-redundant
-    CDS pan-genome, as described by df_alleles. Yields a binary
-    ARO x genome table, with AROs correspondings to alleles detected by RGI.
+    CDS pan-genome, as described by df_alleles. Yields a table with all RGI-detected
+    alleles as index, a column for their matched ARO, and binary columns based
+    on their relevance to drugs of interest.
     
     Parameters
     ----------
     rgi_txt : str
         Path to RGI outputted text file
-    aro_out : str
-        Path to output ARO x genome table, as CSV or CSV.GZ
-    df_alleles : str or pd.DataFrame
-        Dataframe of allele x genome table, or path to the table
-    map_aros : bool
-        If True, renames alleles to AROs and combines same-ARO alleles (default True) 
+    drugs : dict
+        Dictionary mapping drugs of interest to AROs
+    G_aro : nx.DiGraph 
+        ARO network for linking AMR genes to drugs, from construct_aro_to_drug_network()
     skip_loose : bool
         If True, skips Loose hits from RGI (default True)
         
     Returns
+    -------
     df_rgi : pd.DataFrame
         Dataframe containing raw RGI txt output, optionally with Loose hits removed
     df_aro : pd.DataFrame
-        Dataframe with binary ARO x genome table
+        DataFrame indexed by AMR allele, with ARO column + binary column per drug.
+        Includes AMR alleles not related to any of the drugs of interest
+        (only ARO column will be filled, drug columns would all be np.nan)
     '''
     
     ''' Load RGI hits '''
@@ -87,29 +91,27 @@ def build_resistome(rgi_txt, aro_out, df_alleles, map_aros=True, skip_loose=True
     if skip_loose:
         df_rgi = df_rgi[df_rgi.Cut_Off != 'Loose']
     
-    ''' Map RGI alleles to AROs '''
+    ''' Map RGI alleles to AROs and then to drug '''
     df = df_rgi.loc[:,['ORF_ID', 'ARO']]
-    allele_to_aro = {}
+    allele_to_drug = {} # maps allele:'ARO':aro or allele:<drug>:1 if ARO is related to that drug
     for row in df.itertuples(name=None):
+        ''' Get ARO for RGI allele '''
         i, allele, aro = row
-        if allele in allele_to_aro: # allele mapped to multiple AROs
+        if allele in allele_to_drug: # allele mapped to multiple AROs
             print 'Duplicate hit:', allele
-        allele_to_aro[allele] = aro
+        allele_to_drug[allele] = {'ARO': aro}
         
-    ''' Slice df_alleles to just RGI hits '''
-    aro_alleles = sorted(allele_to_aro.keys())
-    if type(df_alleles) == str:
-        df_aro = pd.read_csv(df_alleles, index_col=0).loc[aro_alleles,:]
-    else: # allele x genome table provided directly
-        df_aro = df_alleles.loc[aro_alleles,:]
+        ''' Use ARO to map against drugs '''
+        for drug, drug_aro in drugs.items():
+            is_related = nx.has_path(G_aro, 'ARO:' + str(aro), drug_aro)
+            if is_related: # allele/ARO confers resistance
+                allele_to_drug[allele][drug] = 1
     
-    ''' Optionally convert alleles to AROs '''
-    if map_aros:
-        df_aro.index = df_aro.index.map(lambda x: allele_to_aro[x]) # map alleles to AROs
-        df_aro = df_aro.fillna(0).groupby([df_aro.index]).sum() > 0 # boolean table
-        df_aro = df_aro.replace({True:1, False:np.nan})
-    df_aro.to_csv(aro_out)
-    
+    ''' Format into DataFrame '''
+    aro_alleles = sorted(list(allele_to_drug.keys()))
+    column_order = ['ARO'] + sorted(drugs.keys())
+    df_aro = pd.DataFrame.from_dict(allele_to_drug, orient='index') #, columns=aro_alleles)
+    df_aro = df_aro.reindex(columns=column_order)
     return df_rgi, df_aro
     
 
@@ -187,5 +189,3 @@ def construct_aro_to_drug_network(obo_path):
                 break
     G_full.remove_node('ARO:1000001') # root node, links all genes and drugs when present
     return G_full, aro_names
-    
-    
