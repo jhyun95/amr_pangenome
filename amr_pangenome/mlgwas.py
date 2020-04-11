@@ -7,11 +7,96 @@ Created on Fri Apr 3 18:49:02 2020
 
 """
 
-import collections
+import collections, re
 import numpy as np
 import pandas as pd
 import scipy.stats
 import sklearn.base, sklearn.svm, sklearn.ensemble
+
+def evaluate_gwas(df_weights, df_aro, drug):
+    '''
+    Compares the genetic features detected by a statistical method 
+    to those detected by sequence homology to known AMR genes (CARD/RGI).
+    For each detected feature reports:
+        Weight: Raw weight reported by df_weights
+        R rank: Rank sorted descending (resistance score)
+        S rank: Rank sorted ascending (susceptibility score)
+        Gene: Gene name for feature
+        Feature Type: Gene, Allele, or Upstream
+        Hit: Allele name for ARO hit
+        ARO: ARO ID of the ARO hit
+        Hit Type: Exact or same gene
+    
+    Parameters
+    ----------
+    df_weights : pd.Series
+        Features mapping to weights, usually a single column of
+        df_weights returned by gwas methods.
+    df_aro : pd.DataFrame
+        Processed CARD output with ARO allele vs. ARO ID vs. drug
+        data for an organism. Usually ends in "_allele_by_aro.csv" 
+    drug : str
+        Name of drug to evaluate AMR alleles against. Uses all ARO hits
+        across all drugs if None.
+        
+    Returns
+    -------
+    df_eval : pd.DataFrame
+        DataFrame describing statistically detected AMR hits that
+        were also detected by CARD/RGI as defined by df_aro.
+    '''
+    
+    def feature_to_gene(feature):
+        ''' Returns the gene and feature type (C, A, or U) of a genetic feature '''
+        last_letter_match = list(re.finditer(r'[A-Z]', feature, re.I))[-1]
+        last_letter = last_letter_match.group()
+        if last_letter == 'C': # cluster/gene feature
+            gene = feature
+        else: # allele or upstream feature
+            gene = feature[:last_letter_match.end()-1]
+        return gene, {'C':'gene', 'A':'allele', 'U':'upstream'}[last_letter]
+    
+    ''' Extract alleles and genes relevant to drug '''
+    df_drug = df_aro[pd.notnull(df_aro[drug])] if not drug is None else df_aro
+    aro_alleles = df_drug.index.tolist()
+    aro_genes, _ = zip(*map(feature_to_gene, aro_alleles))
+    
+    ''' Get feature rankings '''
+    df_eval = pd.DataFrame(index=df_weights.index)
+    raw_weights = df_weights.values
+    df_eval['weight'] = raw_weights
+    df_eval['sus_rank'] = scipy.stats.rankdata(raw_weights) # smallest = 1
+    df_eval['res_rank'] = scipy.stats.rankdata(-raw_weights) # largest = 1
+    
+    ''' Reduce down to just ARO hits '''
+    feature_genes, feature_types = zip(*map(feature_to_gene, df_eval.index))
+    df_eval['gene'] = feature_genes
+    df_eval['feature_type'] = feature_types
+    hits = filter(lambda x: df_eval.loc[x,'gene'] in aro_genes, df_eval.index)
+    df_eval = df_eval.reindex(index=hits)
+    
+    ''' Add in ARO hit information '''
+    hit_aros = []; hit_aro_alleles = []; hit_types = []
+    for hit in hits:
+        if hit in df_drug.index: # exact match
+            hit_type = 'Exact'
+            hit_aro_allele = hit
+        else: # hit of related gene
+            hit_type = 'Same gene'
+            hit_gene = df_eval.loc[hit,'gene']
+            for i in range(len(aro_alleles)):
+                aro_allele = aro_alleles[i]; aro_gene = aro_genes[i]
+                if aro_gene == hit_gene:
+                    hit_aro_allele = aro_allele; break
+        hit_aro = df_drug.loc[hit_aro_allele,'ARO']
+        hit_aros.append(hit_aro)
+        hit_aro_alleles.append(hit_aro_allele)
+        hit_types.append(hit_type)
+    df_eval['ARO_allele'] = hit_aro_alleles
+    df_eval['ARO'] = hit_aros
+    df_eval['hit_type'] = hit_types
+    return df_eval
+    
 
 def gwas_rse_boruta(df_features, df_labels, base_model=None,
                     n_estimators=100, max_samples=0.8, max_features=0.5, preshuffle=True):
