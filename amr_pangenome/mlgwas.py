@@ -7,11 +7,88 @@ Created on Fri Apr 3 18:49:02 2020
 
 """
 
+import time
 import collections, re
 import numpy as np
 import pandas as pd
 import scipy.stats
 import sklearn.base, sklearn.svm, sklearn.ensemble
+import sklearn.metrics, sklearn.model_selection
+
+def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
+    n_estimators=[50,100,200,400,800], max_features=[1.0,0.75,0.50,0.25], 
+    C=[0.01,0.1,1,10,100], n_jobs=1):
+    ''' 
+    Grid search to get SVM-RSE performance for different hyperparameter 
+    settings, on the basis of both prediction MCC (from 5-fold CV) and 
+    GWAS feature selection (relative to df_aro). Bootstrap fraction is 
+    fixed to 80%, classifier to LinearSVC with L1, squared_hinge, balanced.
+    Not using sklearn automated method, due to multiple evaluation functions.
+    '''
+
+    mcc_scorer = sklearn.metrics.make_scorer(sklearn.metrics.matthews_corrcoef)
+    round3 = lambda x: round(x,3)
+    report_values = []
+    for n_est in n_estimators:
+        for max_feat in max_features:
+            for Cparam in C:
+                print (n_est, max_feat, Cparam)
+                ''' Build base model with C parameter set '''
+                base_clf = sklearn.svm.LinearSVC(penalty='l1', loss='squared_hinge', 
+                    dual=False, class_weight='balanced', C=Cparam)
+                
+                ''' Train SVM-RSE on full data for weights -> ranks -> GWAS score '''
+                print '\tTraining full (GWAS)...',
+                t = time.time()
+                df_weights, rse_clf, X, y = gwas_rse(df_features, df_labels,
+                    null_shuffle=False, base_model=base_clf,
+                    rse_kwargs={'n_estimators':n_est, 'max_samples':0.8, 
+                                'max_features':max_feat, 'bootstrap':True, 
+                                'bootstrap_features':False, 'n_jobs':n_jobs},
+                    return_matrices=True)
+                df_eval = evaluate_gwas(df_weights, df_aro, drug)
+                gwas_score, gwas_ranks = score_ranking(df_eval)
+                print round3(time.time() - t)
+                
+                ''' Evaluate prediction performance with 5-fold CV '''
+                print '\tTraining 5CV (MCC)...',
+                t = time.time()
+                mcc_scores = sklearn.model_selection.cross_val_score(
+                    rse_clf, X=X, y=y, scoring=mcc_scorer, cv=5)
+                mcc_avg = np.mean(mcc_scores)
+                print round3(time.time() - t) 
+                
+                ''' TODO: Report scores '''
+                print '\tGWAS Score:', round3(gwas_score), '\t', map(round3, gwas_ranks)
+                print '\tPred Score:', round3(mcc_avg), '\t', map(round3, mcc_scores)
+                report_values.append((n_est, max_feat, Cparam, gwas_score, 
+                    mcc_avg, mcc_scores, gwas_score, gwas_ranks))
+    df_report = pd.DataFrame(columns=['n_estimators', 'max_features', 'C', 
+                    'GWAS score', 'GWAS ranks', 'MCC avg', 'MCC 5CV'],
+                    data=report_values)
+    return df_report
+                
+
+def score_ranking(df_eval):
+    '''
+    Scores a ranking table from evaluate_gwas with the following formula:
+        # score = sum[ln(1 + min(res_rank, sus_rank)]
+        score = sum[0.5 ^ (min(res_rank, sus_rank) - 1)/10]
+    Exponential rank score makes the value of a true hit decrease by 50%
+    for every 10 ranks, i.e. 1st = 1, 11th = 0.5, 21st = 0.25, etc.
+    Uses "true hits from df_eval table returned by evaluate_gwas. 
+    Intended for hyperparameter optimization
+    '''
+    if df_eval.shape[0] == 0: # no hits
+        return 0.0, []
+    else: # at least one hit
+        ranks = df_eval.loc[:,['sus_rank','res_rank']].values
+        min_ranks = np.amin(ranks, axis=1)
+        #scores = 1.0 / np.log(1.0 + min_ranks)
+        adj_ranks = (min_ranks - 1.0) / 10.0
+        scores = np.exp2(-adj_ranks).sum()
+        return scores.sum(), min_ranks
+    
 
 def evaluate_gwas(df_weights, df_aro, drug):
     '''
@@ -63,7 +140,7 @@ def evaluate_gwas(df_weights, df_aro, drug):
     
     ''' Get feature rankings '''
     df_eval = pd.DataFrame(index=df_weights.index)
-    raw_weights = df_weights.values
+    raw_weights = np.nanmean(df_weights.values, axis=1) 
     df_eval['weight'] = raw_weights
     df_eval['sus_rank'] = scipy.stats.rankdata(raw_weights) # smallest = 1
     df_eval['res_rank'] = scipy.stats.rankdata(-raw_weights) # largest = 1
@@ -223,7 +300,8 @@ def gwas_rse_boruta(df_features, df_labels, base_model=None,
 
 def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None, 
              rse_kwargs={'n_estimators':100, 'max_samples':0.8, 'max_features':0.5,
-                         'bootstrap':True, 'bootstrap_features':False}):
+                         'bootstrap':True, 'bootstrap_features':False},
+             return_matrices=False):
     '''
     Runs a random subspace ensemble using sklearn BaggingClassifier.
     Can specify a base_model, or will use an L1-normalized LinearSVC by default.
@@ -245,6 +323,8 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
         Keyword arguments to pass to BaggingEnsemble.
         (default {'n_estimators':100, 'max_samples':0.8, 'max_features':0.5,
                 'bootstrap':True, 'bootstrap_features':False})
+    return_matrics : bool
+        If True, returns X and y used for training (default False)
                 
     Returns
     -------
@@ -255,6 +335,10 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
         features that have a non-zero weight at least once.
     rse : sklearn.ensemble.BaggingClassifier
         Fitted ensemble model
+    X : np.ndarray
+        Feature matrix used for training (if return_matrices is True)
+    y : np.ndarray
+        Label vector used for training (if return_matrics is True)
     '''
 
     X, y = setup_Xy(df_features, df_labels, null_shuffle)
@@ -285,7 +369,10 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
     ''' Filter out 0-weight parameters from weight table '''
     df_avg_weights = df_weights.mean(axis=1, skipna=True)
     df_weights = df_weights[df_avg_weights != 0.0]
-    return df_weights, rse_clf
+    if return_matrices:
+        return df_weights, rse_clf, X, y
+    else:
+        return df_weights, rse_clf
     
 
 def gwas_fisher_exact(df_features, df_labels, null_shuffle=False, report_rate=10000):
@@ -345,7 +432,7 @@ def gwas_fisher_exact(df_features, df_labels, null_shuffle=False, report_rate=10
 
 
 def make_amr_gwas_data_generator(df_features, df_amr, max_imbalance=0.95, min_variation=2, 
-                                 binarize=True):
+                                 binarize=True, drugs=None):
     '''
     Creates a generator that yields (drug, df_features, df_phenotype) 
     tuples for each drug that is sufficiently balanced from full 
@@ -365,6 +452,8 @@ def make_amr_gwas_data_generator(df_features, df_amr, max_imbalance=0.95, min_va
         If set to 0, all features are used each time (default 2)
     binarize : bool
         If True, runs binarize_amr_table on df_amr (default True)
+    drugs : list
+        Only generate data for these drugs, or use all drugs if None (default None)
     
     Returns
     -------
@@ -386,8 +475,12 @@ def make_amr_gwas_data_generator(df_features, df_amr, max_imbalance=0.95, min_va
             res_rate = df_phenotype.sum() / float(df_phenotype.shape[0])
             sus_rate = 1.0 - res_rate
             is_imbalanced = res_rate > max_imbalance or sus_rate > max_imbalance
-            if is_imbalanced:
-                ''' Do not process features for imbalanced cases '''
+            
+            ''' Optionally, check if drug is of interest '''
+            is_relevant_drug = (drugs is None) or (drug in drugs)
+            
+            if is_imbalanced or not is_relevant_drug:
+                ''' Do not process features for imbalanced cases or irrelevant cases '''
                 yield (drug, None, df_phenotype)
             else:
                 ''' Filter out features missing in the drug-specific dataset,
@@ -442,7 +535,7 @@ def binarize_amr_table(df_amr):
         df_pheno = df_amr.map(binarize_sir)
         return df_pheno, sir_counts
     elif type(df_amr) == pd.DataFrame: # process DataFrame column-by-column
-        processed = map(lambda col: process_amr_table(df_amr[col]), df_amr.columns)
+        processed = map(lambda col: binarize_amr_table(df_amr[col]), df_amr.columns)
         processed_columns, sir_counters = zip(*processed)
         sir_counts = {df_amr.columns[i]:sir_counters[i] for i in range(df_amr.shape[1])}
         df_pheno = pd.concat(processed_columns, axis=1)
@@ -453,10 +546,26 @@ def binarize_amr_table(df_amr):
 
     
 def setup_Xy(df_features, df_labels, null_shuffle=False):
-    ''' Takes feature DataFrame and label Series and returns the 
-        X and y numpy arrays to use with sklearn. Takes into account
-        shuffling for null models, and potential need to transpose. '''
-    X = df_features.values; y = df_labels.values; n = y.shape[0]
+    ''' 
+    Takes feature DataFrame and label Series and returns the 
+    X and y numpy arrays to use with sklearn. Returns inputs directly
+    if np arrays are provided. Takes into account shuffling for null 
+    models, and potential need to transpose. 
+    '''
+    
+    if type(df_features) == pd.core.frame.DataFrame: # normal DataFrame provided
+        X = df_features.values
+    elif type(df_features) == pd.core.sparse.frame.SparseDataFrame: # SparseDataFrame provided
+        X = df_features.to_coo() # sparse data structures sometimes faster to train 
+    else: # otherwise, assume arrays provided
+        X = df_features.copy()
+        
+    if type(df_labels) == pd.core.frame.DataFrame: # normal DataFrame provided
+        y = df_labels.values
+    else: # otherwise, assumes arrays provided
+        y = df_labels.copy()
+
+    n = y.shape[0]
     if X.shape[0] != n: # dimension mismatch
         if X.shape[1] == n: # transpose provided
             X = X.T
