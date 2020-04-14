@@ -17,7 +17,7 @@ import sklearn.metrics, sklearn.model_selection
 
 def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
     n_estimators=[50,100,200,400,800], max_features=[1.0,0.75,0.50,0.25], 
-    C=[0.01,0.1,1,10,100], n_jobs=1):
+    C=[0.01,0.1,1,10,100], n_jobs=1, seed=None):
     ''' 
     Grid search to get SVM-RSE performance for different hyperparameter 
     settings, on the basis of both prediction MCC (from 5-fold CV) and 
@@ -35,7 +35,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
                 print (n_est, max_feat, Cparam)
                 ''' Build base model with C parameter set '''
                 base_clf = sklearn.svm.LinearSVC(penalty='l1', loss='squared_hinge', 
-                    dual=False, class_weight='balanced', C=Cparam)
+                    dual=False, class_weight='balanced', C=Cparam, random_state=seed)
                 
                 ''' Train SVM-RSE on full data for weights -> ranks -> GWAS score '''
                 print '\tTraining full (GWAS)...',
@@ -44,7 +44,8 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
                     null_shuffle=False, base_model=base_clf,
                     rse_kwargs={'n_estimators':n_est, 'max_samples':0.8, 
                                 'max_features':max_feat, 'bootstrap':True, 
-                                'bootstrap_features':False, 'n_jobs':n_jobs},
+                                'bootstrap_features':False, 'n_jobs':n_jobs,
+                                'random_state':seed},
                     return_matrices=True)
                 df_eval = evaluate_gwas(df_weights, df_aro, drug)
                 gwas_score, gwas_ranks = score_ranking(df_eval)
@@ -61,8 +62,8 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
                 ''' TODO: Report scores '''
                 print '\tGWAS Score:', round3(gwas_score), '\t', map(round3, gwas_ranks)
                 print '\tPred Score:', round3(mcc_avg), '\t', map(round3, mcc_scores)
-                report_values.append((n_est, max_feat, Cparam, gwas_score, 
-                    mcc_avg, mcc_scores, gwas_score, gwas_ranks))
+                report_values.append((n_est, max_feat, Cparam,  
+                    gwas_score, gwas_ranks, mcc_avg, mcc_scores))
     df_report = pd.DataFrame(columns=['n_estimators', 'max_features', 'C', 
                     'GWAS score', 'GWAS ranks', 'MCC avg', 'MCC 5CV'],
                     data=report_values)
@@ -489,7 +490,7 @@ def make_amr_gwas_data_generator(df_features, df_amr, max_imbalance=0.95, min_va
                 df_feat_counts = df_drug_features.fillna(0).sum(axis=1)
                 missing = df_feat_counts[df_feat_counts < 1].index
                 df_drug_features = df_drug_features.drop(missing)
-                df_drug_features = filter_nonvariable(df_drug_features, min_variation=2)
+                df_drug_features = filter_nonvariable(df_drug_features, min_variation=min_variation)
                 yield (drug, df_drug_features, df_phenotype)
                 
     return amr_gwas_generator()
