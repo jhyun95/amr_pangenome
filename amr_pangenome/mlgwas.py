@@ -14,6 +14,8 @@ import pandas as pd
 import scipy.stats
 import sklearn.base, sklearn.svm, sklearn.ensemble
 import sklearn.metrics, sklearn.model_selection
+import xgboost as xgb
+
 
 def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
     n_estimators=[50,100,200,400,800], max_features=[1.0,0.75,0.50,0.25], 
@@ -47,8 +49,12 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
                                 'bootstrap_features':False, 'n_jobs':n_jobs,
                                 'random_state':seed},
                     return_matrices=True)
-                df_eval = evaluate_gwas(df_weights, df_aro, drug)
-                gwas_score, gwas_ranks = score_ranking(df_eval)
+                aro_hit_count = df_aro[pd.notnull(df_aro.loc[:,drug])].shape[0]
+                if aro_hit_count == 0: # no reference hits, cannot score based on GWAS
+                    gwas_score = np.nan; gwas_ranks = [np.nan]
+                else: # reference hits available
+                    df_eval = evaluate_gwas(df_weights, df_aro, drug)
+                    gwas_score, gwas_ranks = score_ranking(df_eval)
                 print round3(time.time() - t)
                 
                 ''' Evaluate prediction performance with 5-fold CV '''
@@ -59,7 +65,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
                 mcc_avg = np.mean(mcc_scores)
                 print round3(time.time() - t) 
                 
-                ''' TODO: Report scores '''
+                ''' Report scores '''
                 print '\tGWAS Score:', round3(gwas_score), '\t', map(round3, gwas_ranks)
                 print '\tPred Score:', round3(mcc_avg), '\t', map(round3, mcc_scores)
                 report_values.append((n_est, max_feat, Cparam,  
@@ -70,7 +76,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
     return df_report
                 
 
-def score_ranking(df_eval):
+def score_ranking(df_eval, signed_weights=True):
     '''
     Scores a ranking table from evaluate_gwas with the following formula:
         # score = sum[ln(1 + min(res_rank, sus_rank)]
@@ -83,15 +89,18 @@ def score_ranking(df_eval):
     if df_eval.shape[0] == 0: # no hits
         return 0.0, []
     else: # at least one hit
-        ranks = df_eval.loc[:,['sus_rank','res_rank']].values
-        min_ranks = np.amin(ranks, axis=1)
+        if signed_weights:
+            ranks = df_eval.loc[:,['sus_rank','res_rank']].values
+            min_ranks = np.amin(ranks, axis=1)
+        else:
+            min_ranks = df_eval.loc[:,'rank'].values
         #scores = 1.0 / np.log(1.0 + min_ranks)
         adj_ranks = (min_ranks - 1.0) / 10.0
         scores = np.exp2(-adj_ranks).sum()
         return scores.sum(), min_ranks
     
 
-def evaluate_gwas(df_weights, df_aro, drug):
+def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True):
     '''
     Compares the genetic features detected by a statistical method 
     to those detected by sequence homology to known AMR genes (CARD/RGI).
@@ -116,6 +125,11 @@ def evaluate_gwas(df_weights, df_aro, drug):
     drug : str
         Name of drug to evaluate AMR alleles against. Uses all ARO hits
         across all drugs if None.
+    signed_weights : bool
+        If True, assumes weights are signed (as in LinearSVC) and produces 
+        both res_rank and sus_rank columns. If False, assumes weights are
+        strictly positive (as in tree-based classifiers) and produced a 
+        single rank column (default True).
         
     Returns
     -------
@@ -143,8 +157,11 @@ def evaluate_gwas(df_weights, df_aro, drug):
     df_eval = pd.DataFrame(index=df_weights.index)
     raw_weights = np.nanmean(df_weights.values, axis=1) 
     df_eval['weight'] = raw_weights
-    df_eval['sus_rank'] = scipy.stats.rankdata(raw_weights) # smallest = 1
-    df_eval['res_rank'] = scipy.stats.rankdata(-raw_weights) # largest = 1
+    if signed_weights: # positive and negative weights
+        df_eval['sus_rank'] = scipy.stats.rankdata(raw_weights) # smallest = 1
+        df_eval['res_rank'] = scipy.stats.rankdata(-raw_weights) # largest = 1
+    else: # strictly positive weights 
+        df_eval['rank'] = scipy.stats.rankdata(-raw_weights) 
     
     ''' Reduce down to just ARO hits '''
     feature_genes, feature_types = zip(*map(feature_to_gene, df_eval.index))
@@ -297,7 +314,7 @@ def gwas_rse_boruta(df_features, df_labels, base_model=None,
         avg_weight = df_avg_weights.loc[feature]
         df_scores.loc[feature,:] = (m, avg_weight, stat, p)
     return df_weights, df_scores
-
+    
 
 def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None, 
              rse_kwargs={'n_estimators':100, 'max_samples':0.8, 'max_features':0.5,
