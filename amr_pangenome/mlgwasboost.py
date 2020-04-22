@@ -22,13 +22,16 @@ import amr_pangenome.mlgwas
 
 def grid_search_xgb_rse(df_features, df_labels, df_aro, drug,
     parameter_sweep={'n_estimators':[25,50,100,200,400],
-                     'colsample_by_tree': [1.0,0.75,0.5,0.25],
+                     'colsample_bytree': [1.0,0.75,0.5,0.25],
                      'max_depth':[3,5,7]},
     fixed_parameters={'learning_rate':0.1, 'min_split_loss':0,
                       'min_child_weight':1, 'subsample':0.8,
                       'scale_pos_weight':1, 'reg_lambda':0,
                       'reg_alpha':1, 'objective':'binary:logistic'},
     seed=1, n_jobs=1):
+    '''
+    Grid search for XGBoost. Parameters and outputs are based on mlgwas.grid_search_svm_rse()
+    '''
     return grid_search_gb_rse(df_features, df_labels, df_aro, drug, 
         'xgb', parameter_sweep, fixed_parameters, seed, n_jobs)      
 
@@ -41,6 +44,9 @@ def grid_search_lgb_rse(df_features, df_labels, df_aro, drug,
                       'subsample_freq':1, 'subsample':0.8,
                       'reg_lambda':0, 'reg_alpha':1, 'objective':'binary'},
     seed=1, n_jobs=1):
+    '''
+    Grid search for LightGBM. Parameters and outputs are based on mlgwas.grid_search_svm_rse()
+    '''
     return grid_search_gb_rse(df_features, df_labels, df_aro, drug, 
         'lgb', parameter_sweep, fixed_parameters, seed, n_jobs)
 
@@ -48,7 +54,9 @@ def grid_search_lgb_rse(df_features, df_labels, df_aro, drug,
 def grid_search_gb_rse(df_features, df_labels, df_aro, drug, model,
                        parameter_sweep, fixed_parameters, seed=1, n_jobs=1):
     ''' 
-    Grid search for either XGB or LightGBM, based on grid_search_svm_rse.
+    Grid search for either XGB or LightGBM. Parameters and outputs are based on 
+    mlgwas.grid_search_svm_rse(), except for parameter 'model', which is
+    'lgb' for LightGBM, or defaults to XGB.
     '''
     report_values = []
     param_columns = list(parameter_sweep.keys())
@@ -105,13 +113,13 @@ def grid_search_gb_rse(df_features, df_labels, df_aro, drug, model,
 
 def gwas_xgb_rse(df_features, df_labels, null_shuffle, xgb_kwargs={
     'n_estimators':100, 'learning_rate':0.1, 'min_split_loss':0, 
-    'max_depth':5, 'min_child_weight':1, 'colsample_by_tree':0.5, 
+    'max_depth':5, 'min_child_weight':1, 'colsample_bytree':0.5, 
     'subsample':0.8, 'scale_pos_weight':1, 'reg_lambda':0, 'reg_alpha':1 , 
     'seed':1, 'objective':'binary:logistic', 'n_jobs':1}, 
     return_matrices=False):
     '''
     Runs a random subspace ensemble with XGBoost random forest classifier.
-    Parameters and outputs are modeled after gwas_rse().
+    Parameters and outputs are modeled after mlgwas.gwas_rse().
     '''
     xgb_clf = xgb.XGBClassifier(**xgb_kwargs)
     return gwas_gb_rse(df_features, df_labels, null_shuffle, xgb_clf, 'XGB', return_matrices)
@@ -125,7 +133,7 @@ def gwas_lgb_rse(df_features, df_labels, null_shuffle, lgb_kwargs={
     return_matrices=False):
     '''
     Runs a random subspace ensemble with LightGBM random forest classifier.
-    Parameters and outputs are modeled after gwas_rse().
+    Parameters and outputs are modeled after mlgwas.gwas_rse().
     '''
     lgb_clf = lgb.LGBMClassifier(**lgb_kwargs)
     return gwas_gb_rse(df_features, df_labels, null_shuffle, lgb_clf, 'LGB', return_matrices)
@@ -134,6 +142,7 @@ def gwas_lgb_rse(df_features, df_labels, null_shuffle, lgb_kwargs={
 def gwas_gb_rse(df_features, df_labels, null_shuffle, clf, name='weights', return_matrices=False):
     '''
     Trains a classifier with feature_importances_ and extracts weights.
+    Parameters and outputs are modeled after mlgwas.gwas_rse().
     '''
     X, y = amr_pangenome.mlgwas.setup_Xy(df_features, df_labels, null_shuffle)
     clf.fit(X,y,verbose=True)

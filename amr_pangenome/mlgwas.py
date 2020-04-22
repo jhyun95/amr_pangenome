@@ -11,13 +11,166 @@ import time
 import collections, re
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 import scipy.stats
 import sklearn.base, sklearn.svm, sklearn.ensemble
 import sklearn.metrics, sklearn.model_selection
 import xgboost as xgb
 
 
+def plot_grid_search_performance(df_reports, params, grouping='case', figsize=None):
+    '''
+    Generate seaborn stripplots showing average MCC and GWAS scores for 
+    different hyperparameter values.
+    
+    Parameters
+    ----------
+    df_reports : pd.DataFrame
+        DataFrame with gridsearch results. Needs columns for all params, 
+        grouping, 'MCC avg', and 'GWAS score',.
+    params : list
+        Names of hyperparameters (must be columns in df_reports)
+    grouping : str
+        Name of column by which to group performance scores (default 'case')
+    figsize : tuple
+        Figure size in inches, as in plt.subplots. If None, uses 
+        (12, len(params*3). (default None)
+    '''
+    
+    if figsize is None:
+        figsize = (6*2, len(params)*3)
+    fig, axs = plt.subplots(len(params), 2, figsize=figsize)
+    for p,param in enumerate(params):
+        param_values = df_reports[param].unique()
+        ax = axs[p][0]
+        sns.stripplot(x=grouping, y='MCC avg', hue=param, data=df_reports, ax=axs[p][0], dodge=True, size=3)
+        sns.stripplot(x=grouping, y='GWAS score', hue=param, data=df_reports, ax=axs[p][1], dodge=True, size=3)
+        axs[p][0].set_title('MCC avg vs ' + param)
+        axs[p][1].set_title('GWAS score vs ' + param)
+        axs[p][0].get_legend().remove()
+        axs[p][1].legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        if p == len(params)-1:
+            axs[p][0].set_xticklabels(axs[p][0].get_xticklabels(), rotation=90)
+            axs[p][1].set_xticklabels(axs[p][0].get_xticklabels(), rotation=90)
+        else:
+            axs[p][0].set_xticklabels([])
+            axs[p][1].set_xticklabels([])
+    plt.tight_layout()
+    return fig, axs
+
+
 def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
+    parameter_sweep={'n_estimators': [25,50,100,200],
+                     'max_features': [1.0,0.75,0.5,0.25],
+                     'max_samples': [1.0,0.75,0.5,0.25],
+                     'SVM_C': [0.1,1,10,100]},                    
+    fixed_parameters={'bootstrap':True, 'bootstrap_features':False,
+                      'SVM_penalty':'l1', 'SVM_loss':'squared_hinge',
+                      'SVM_dual':False, 'SVM_class_weight':'balanced'},
+    n_jobs=1, seed=1):
+    '''
+    Grid search for SVM-RSE. For the specified hyperparameter space, 
+    computes the GWAS score, ranks of known AMR genes, test MCC from 
+    5-fold cross validation, and run times.
+    
+    Parameters
+    ----------
+    df_features : pd.DataFrame
+        Binary samples x features DataFrame. Assumes all values are 0 or 1.
+        Will automatically transpose if necessary.
+    df_labels : pd.Series
+        Binary Series corresponding to samples in df_features. 
+    df_aro : pd.DataFrame
+        Processed CARD output with ARO allele vs. ARO ID vs. drug
+        data for an organism. Usually ends in "_allele_by_aro.csv" 
+    drug : str
+        Name of drug to evaluate AMR alleles against. Uses all ARO hits
+        across all drugs if None.
+    parameter_sweep : dict
+        Dictionary mapping parameter names to lists of values. 
+        Keys are either kwargs for sklearn.ensemble.BaggingClassifier, 
+        or if preceded by "SVM_", kwargs for sklearn.svm.LinearSVC.
+    fixed_parameters : dict
+        Dictionary mapping parameters to values to be held constant.
+        Keys are either kwargs for sklearn.ensemble.BaggingClassifier, 
+        or if preceded by "SVM_", kwargs for sklearn.svm.LinearSVC.
+    n_jobs : int
+        Number of jobs, overrides parameter dictionaries (default 1)
+    seed : int
+        Randomization seed, overrides parameter dictionaries (default 1)
+        
+    Returns
+    -------
+    df_report : pd.DataFrame
+        DataFrame with model data for all hyperparameter combinations.
+    '''
+    
+    def split_params(params):
+        ''' Split ensemble-level and model-level parameters '''
+        ensemble_params = {}; svm_params = {}
+        for param, value in params.items():
+            if param[:4] == 'SVM_': # model-level param
+                svm_params[param[4:]] = value
+            else: # ensemble-level parm
+                ensemble_params[param] = value
+        return ensemble_params, svm_params
+        
+    report_values = []
+    param_columns = list(parameter_sweep.keys())
+    columns = param_columns + ['GWAS score', 'GWAS ranks', 'MCC avg', 'MCC 5CV', 'GWAS time', '5CV time']
+    round3 = lambda x: round(x,3)
+    mcc_scorer = sklearn.metrics.make_scorer(sklearn.metrics.matthews_corrcoef)
+    rse_fixed_params, svm_fixed_params = split_params(fixed_parameters)
+    for variable_parameters in sklearn.model_selection.ParameterGrid(parameter_sweep):
+        print variable_parameters
+        model_params = dict(fixed_parameters)
+        model_params.update(variable_parameters)
+        model_params['n_jobs'] = n_jobs
+        model_params['random_state'] = seed
+        rse_params, svm_params = split_params(model_params)
+        rse_params.update(rse_fixed_params)
+        svm_params.update(svm_fixed_params)
+
+        ''' Train model on full data for weights -> ranks -> GWAS score '''
+        print '\tTraining full (GWAS)...',
+        t = time.time()
+        base_clf = sklearn.svm.LinearSVC(**svm_params)
+        df_weights, clf, X, y = gwas_rse(df_features, df_labels, null_shuffle=False,
+             base_model=base_clf, rse_kwargs=rse_params, return_matrices=True)
+            
+        aro_hit_count = df_aro[pd.notnull(df_aro.loc[:,drug])].shape[0]
+        if aro_hit_count == 0: # no reference hits, cannot score based on GWAS
+            gwas_score = np.nan; gwas_ranks = [np.nan]
+        else: # reference hits available
+            df_eval = evaluate_gwas(df_weights, df_aro, drug, signed_weights=True)
+            gwas_score, gwas_ranks = score_ranking(df_eval, signed_weights=True)
+        time_gwas = time.time() - t
+        print round3(time_gwas)
+        
+        ''' Evaluate model prediction performance with 5-fold CV '''
+        print '\tTraining 5CV (MCC)...',
+        t = time.time()
+        mcc_scores = sklearn.model_selection.cross_val_score(
+            clf, X=X, y=y, scoring=mcc_scorer, cv=5)
+        mcc_avg = np.mean(mcc_scores)
+        time_5cv = time.time() - t
+        print round3(time_5cv) 
+
+        ''' Report scores '''
+        print '\tSelected features:', df_weights.shape[0]
+        print '\tGWAS Score:', round3(gwas_score), '\t', map(round3, gwas_ranks)
+        print '\tPred Score:', round3(mcc_avg), '\t', map(round3, mcc_scores)
+        param_set = list(map(lambda x: variable_parameters[x], param_columns))
+        report_values.append(param_set + [gwas_score, gwas_ranks, 
+            mcc_avg, mcc_scores, time_gwas, time_5cv])
+        
+    df_report = pd.DataFrame(columns=columns, data=report_values)
+    return df_report
+
+
+def grid_search_svm_rse_old(df_features, df_labels, df_aro, drug,
     n_estimators=[50,100,200,400,800], max_features=[1.0,0.75,0.50,0.25], 
     C=[0.01,0.1,1,10,100], n_jobs=1, seed=None):
     ''' 
@@ -26,8 +179,9 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
     GWAS feature selection (relative to df_aro). Bootstrap fraction is 
     fixed to 80%, classifier to LinearSVC with L1, squared_hinge, balanced.
     Not using sklearn automated method, due to multiple evaluation functions.
+    
+    Old version, use grid_search_svm_rse().
     '''
-
     mcc_scorer = sklearn.metrics.make_scorer(sklearn.metrics.matthews_corrcoef)
     round3 = lambda x: round(x,3)
     report_values = []
@@ -79,12 +233,28 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
 def score_ranking(df_eval, signed_weights=True):
     '''
     Scores a ranking table from evaluate_gwas with the following formula:
-        # score = sum[ln(1 + min(res_rank, sus_rank)]
-        score = sum[0.5 ^ (min(res_rank, sus_rank) - 1)/10]
+        gwas_score = sum[0.5 ^ (min(res_rank, sus_rank) - 1)/10]
     Exponential rank score makes the value of a true hit decrease by 50%
     for every 10 ranks, i.e. 1st = 1, 11th = 0.5, 21st = 0.25, etc.
     Uses "true hits from df_eval table returned by evaluate_gwas. 
-    Intended for hyperparameter optimization
+    Intended for hyperparameter optimization.
+    
+    Parameters
+    ----------
+    df_eval : pd.DataFrame
+        DataFrame with ranks of known AMR hits from evaluate_gwas()
+    signed_weights : bool
+        If True, assumes weights are signed (as in LinearSVC) and uses the
+        minimum of res_rank and sus_rank for scoring. If False, assumes
+        weights are positive (as in tree-based classifiers) (default True)
+        
+    Returns
+    -------
+    gwas_score : float
+        Rank-weighted GWAS score as described earlier
+    min_ranks : np.array
+        Ranks used for computing GWAS score
+        
     '''
     if df_eval.shape[0] == 0: # no hits
         return 0.0, []
@@ -97,7 +267,8 @@ def score_ranking(df_eval, signed_weights=True):
         #scores = 1.0 / np.log(1.0 + min_ranks)
         adj_ranks = (min_ranks - 1.0) / 10.0
         scores = np.exp2(-adj_ranks).sum()
-        return scores.sum(), min_ranks
+        gwas_score = scores.sum()
+        return gwas_score, min_ranks
     
 
 def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True):
