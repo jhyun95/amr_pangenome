@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 import scipy.stats
-import sklearn.base, sklearn.svm, sklearn.ensemble
+import sklearn.base, sklearn.svm, sklearn.ensemble, sklearn.linear_model
 import sklearn.metrics, sklearn.model_selection
 import xgboost as xgb
 
@@ -129,14 +129,15 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         model_params.update(variable_parameters)
         model_params['n_jobs'] = n_jobs
         model_params['random_state'] = seed
+        model_params['SVM_random_state'] = seed
         rse_params, svm_params = split_params(model_params)
         rse_params.update(rse_fixed_params)
         svm_params.update(svm_fixed_params)
-
+        
         ''' Train model on full data for weights -> ranks -> GWAS score '''
         print '\tTraining full (GWAS)...',
         t = time.time()
-        base_clf = sklearn.svm.LinearSVC(**svm_params)
+        base_clf = SafeLinearSVC(**svm_params)
         df_weights, clf, X, y = gwas_rse(df_features, df_labels, null_shuffle=False,
              base_model=base_clf, rse_kwargs=rse_params, return_matrices=True)
             
@@ -177,7 +178,7 @@ def grid_search_svm_rse_old(df_features, df_labels, df_aro, drug,
     Grid search to get SVM-RSE performance for different hyperparameter 
     settings, on the basis of both prediction MCC (from 5-fold CV) and 
     GWAS feature selection (relative to df_aro). Bootstrap fraction is 
-    fixed to 80%, classifier to LinearSVC with L1, squared_hinge, balanced.
+    fixed to 80%, classifier to linear SVM with L1, squared_hinge, balanced.
     Not using sklearn automated method, due to multiple evaluation functions.
     
     Old version, use grid_search_svm_rse().
@@ -190,8 +191,7 @@ def grid_search_svm_rse_old(df_features, df_labels, df_aro, drug,
             for Cparam in C:
                 print (n_est, max_feat, Cparam)
                 ''' Build base model with C parameter set '''
-                base_clf = sklearn.svm.LinearSVC(penalty='l1', loss='squared_hinge', 
-                    dual=False, class_weight='balanced', C=Cparam, random_state=seed)
+                base_clf = get_default_svm(seed=seed)
                 
                 ''' Train SVM-RSE on full data for weights -> ranks -> GWAS score '''
                 print '\tTraining full (GWAS)...',
@@ -244,7 +244,7 @@ def score_ranking(df_eval, signed_weights=True):
     df_eval : pd.DataFrame
         DataFrame with ranks of known AMR hits from evaluate_gwas()
     signed_weights : bool
-        If True, assumes weights are signed (as in LinearSVC) and uses the
+        If True, assumes weights are signed (as in SVMs) and uses the
         minimum of res_rank and sus_rank for scoring. If False, assumes
         weights are positive (as in tree-based classifiers) (default True)
         
@@ -297,7 +297,7 @@ def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True):
         Name of drug to evaluate AMR alleles against. Uses all ARO hits
         across all drugs if None.
     signed_weights : bool
-        If True, assumes weights are signed (as in LinearSVC) and produces 
+        If True, assumes weights are signed (as in SVMs) and produces 
         both res_rank and sus_rank columns. If False, assumes weights are
         strictly positive (as in tree-based classifiers) and produced a 
         single rank column (default True).
@@ -383,8 +383,7 @@ def gwas_rse_boruta(df_features, df_labels, base_model=None,
         Binary Series corresponding to samples in df_features. 
     base_model : sklearn classifier
         Any sklearn classifier compatible with BaggingClassifier. If None, uses
-        sklearn.svm.LinearSVC(penalty='l1', loss='squared_hinge', 
-              dual=False, class_weight='balanced'), (default None)
+        sklearn.svm.LinearSVC, see get_default_svm() (default None)
     n_estimators : int
         Number of models to train in ensemble (default 100)
     max_samples : float
@@ -404,8 +403,7 @@ def gwas_rse_boruta(df_features, df_labels, base_model=None,
     if base_model:
         base_clf = sklearn.base.clone(base_model)
     else: # defaulting to L1-SVM with class balance
-        base_clf = sklearn.svm.LinearSVC(penalty='l1', loss='squared_hinge', 
-              dual=False, class_weight='balanced')
+        base_clf = get_default_svm()
         
     ''' Train each model with selected features + corresponding shuffled features '''
     all_feat_weights = np.empty((n_features, n_estimators))
@@ -493,7 +491,7 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
              return_matrices=False):
     '''
     Runs a random subspace ensemble using sklearn BaggingClassifier.
-    Can specify a base_model, or will use an L1-normalized LinearSVC by default.
+    Can specify a base_model, or defaults to a L1-normalized, class weighted SVM.
     
     Parameters
     ----------
@@ -506,8 +504,7 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
         If True, randomly shuffles labels for null model testing (default False)
     base_model : sklearn classifier
         Any sklearn classifier compatible with BaggingClassifier. If None, uses
-        sklearn.svm.LinearSVC(penalty='l1', loss='squared_hinge', 
-              dual=False, class_weight='balanced'), (default None)
+        sklearn.svm.LinearSVC, see get_default_svm() (default None)
     rse_kwargs : dict
         Keyword arguments to pass to BaggingEnsemble.
         (default {'n_estimators':100, 'max_samples':0.8, 'max_features':0.5,
@@ -536,8 +533,7 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
     if base_model:
         base_clf = sklearn.base.clone(base_model)
     else: # defaulting to L1-SVM with class balance
-        base_clf = sklearn.svm.LinearSVC(penalty='l1', loss='squared_hinge', 
-              dual=False, class_weight='balanced')
+        base_clf = get_default_svm()
     rse_clf = sklearn.ensemble.BaggingClassifier(base_clf, **rse_kwargs)
     
     ''' Train classifier '''
@@ -558,6 +554,7 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
     ''' Filter out 0-weight parameters from weight table '''
     df_avg_weights = df_weights.mean(axis=1, skipna=True)
     df_weights = df_weights[df_avg_weights != 0.0]
+    df_weights.dropna(axis=0, how='all', inplace=True)
     if return_matrices:
         return df_weights, rse_clf, X, y
     else:
@@ -793,3 +790,27 @@ def filter_nonvariable(df_features, min_variation=2):
     max_count = num_samples - min_variation # inclusive count bounds
     selected_features = df_counts[(df_counts >= min_count) & (df_counts <= max_count)].index
     return df_features.loc[selected_features,:]
+
+
+def get_default_svm(seed=None):
+    ''' Default sklearn-compatible SVM classifier '''
+    base_clf = SafeLinearSVC(penalty='l1', loss='squared_hinge', 
+       dual=False, class_weight='balanced', random_state=seed)
+    return base_clf
+
+
+class SafeLinearSVC(sklearn.svm.LinearSVC):
+    ''' 
+    LinearSVC modified to be compatible with BaggingClassifier.
+    When bootstrapping, BaggingClassifier will generate sample_weights 
+    rather than create slices of the input matrix. However, LinearSVC
+    is unable to use sample_weights and will forgo bootstrapping entirely.
+    (see https://github.com/scikit-learn/scikit-learn/issues/10873)
+    
+    If the base estimator's fit() function does not support sample_weights, 
+    it will fall back on generating slices which will work correctly 
+    with LinearSVC. (see sklearn.ensemble._parallel_build_estimators).
+    '''
+    
+    def fit(self, X, y):
+        return super(SafeLinearSVC, self).fit(X, y)

@@ -26,8 +26,8 @@ def grid_search_xgb_rse(df_features, df_labels, df_aro, drug,
                      'max_depth':[3,5,7]},
     fixed_parameters={'learning_rate':0.1, 'min_split_loss':0,
                       'min_child_weight':1, 'subsample':0.8,
-                      'scale_pos_weight':1, 'reg_lambda':0,
-                      'reg_alpha':1, 'objective':'binary:logistic'},
+                      'reg_lambda':0, 'reg_alpha':1, 
+                      'objective':'binary:logistic'},
     seed=1, n_jobs=1):
     '''
     Grid search for XGBoost. Parameters and outputs are based on mlgwas.grid_search_svm_rse()
@@ -40,8 +40,7 @@ def grid_search_lgb_rse(df_features, df_labels, df_aro, drug,
     parameter_sweep={'n_estimators':[25,50,100,200,400],
                      'colsample_bytree': [1.0,0.75,0.5,0.25],
                      'max_depth':[3,5,7]},
-    fixed_parameters={'min_child_samples':2, 'class_weight':'balanced',
-                      'subsample_freq':1, 'subsample':0.8,
+    fixed_parameters={'min_child_samples':2, 'subsample_freq':1, 'subsample':0.8,
                       'reg_lambda':0, 'reg_alpha':1, 'objective':'binary'},
     seed=1, n_jobs=1):
     '''
@@ -114,7 +113,7 @@ def grid_search_gb_rse(df_features, df_labels, df_aro, drug, model,
 def gwas_xgb_rse(df_features, df_labels, null_shuffle, xgb_kwargs={
     'n_estimators':100, 'learning_rate':0.1, 'min_split_loss':0, 
     'max_depth':5, 'min_child_weight':1, 'colsample_bytree':0.5, 
-    'subsample':0.8, 'scale_pos_weight':1, 'reg_lambda':0, 'reg_alpha':1 , 
+    'subsample':0.8, 'reg_lambda':0, 'reg_alpha':1 , 
     'seed':1, 'objective':'binary:logistic', 'n_jobs':1}, 
     return_matrices=False):
     '''
@@ -127,9 +126,9 @@ def gwas_xgb_rse(df_features, df_labels, null_shuffle, xgb_kwargs={
     
 def gwas_lgb_rse(df_features, df_labels, null_shuffle, lgb_kwargs={
     'n_estimators':100, 'max_depth':5, 'colsample_bytree':0.5,
-    'min_child_samples':2, 'class_weight':'balanced', 
-    'reg_alpha':1, 'reg_lambda':0, 'subsample':0.8, 'subsample_freq':1, 
-    'boosting_type':'gbdt', 'objective':'binary', 'random_state':1, 'n_jobs':1}, 
+    'min_child_samples':2, 'reg_alpha':1, 'reg_lambda':0, 
+    'subsample':0.8, 'subsample_freq':1, 'boosting_type':'gbdt', 
+    'objective':'binary', 'random_state':1, 'n_jobs':1}, 
     return_matrices=False):
     '''
     Runs a random subspace ensemble with LightGBM random forest classifier.
