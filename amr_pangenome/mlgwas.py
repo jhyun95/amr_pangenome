@@ -20,6 +20,8 @@ import sklearn.metrics, sklearn.model_selection
 import imblearn.ensemble
 import xgboost as xgb
 
+import mlrse
+
 
 def plot_grid_search_performance(df_reports, params, grouping='case', figsize=None):
     '''
@@ -68,7 +70,6 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
                      'max_samples': [1.0,0.75,0.5,0.25],
                      'SVM_C': [0.1,1,10,100]},                    
     fixed_parameters={'bootstrap':True, 'bootstrap_features':False,
-                      'sampling_strategy': 'all',
                       'SVM_penalty':'l1', 'SVM_loss':'squared_hinge',
                       'SVM_dual':False, 'SVM_class_weight':'balanced'},
     n_jobs=1, seed=1):
@@ -92,11 +93,11 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         across all drugs if None.
     parameter_sweep : dict
         Dictionary mapping parameter names to lists of values. 
-        Keys are either kwargs for imblearn.ensemble.BalancedBaggingClassifier, 
+        Keys are either kwargs for sklearn.ensemble.BaggingClassifier, 
         or if preceded by "SVM_", kwargs for sklearn.svm.LinearSVC.
     fixed_parameters : dict
         Dictionary mapping parameters to values to be held constant.
-        Keys are either kwargs for imblearn.ensemble.BalancedBaggingClassifier, 
+        Keys are either kwargs for sklearn.ensemble.BaggingClassifier, 
         or if preceded by "SVM_", kwargs for sklearn.svm.LinearSVC.
     n_jobs : int
         Number of jobs, overrides parameter dictionaries (default 1)
@@ -139,7 +140,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         ''' Train model on full data for weights -> ranks -> GWAS score '''
         print '\tTraining full (GWAS)...',
         t = time.time()
-        base_clf = SafeLinearSVC(**svm_params)
+        base_clf = sklearn.svm.LinearSVC(**svm_params)
         df_weights, clf, X, y = gwas_rse(df_features, df_labels, null_shuffle=False,
              base_model=base_clf, rse_kwargs=rse_params, return_matrices=True)
             
@@ -384,7 +385,7 @@ def gwas_rse_boruta(df_features, df_labels, base_model=None,
     df_labels : pd.Series
         Binary Series corresponding to samples in df_features. 
     base_model : sklearn classifier
-        Any sklearn classifier compatible with BalancedBaggingClassifier. 
+        Any sklearn classifier compatible with BaggingClassifier. 
         If None, uses sklearn.svm.LinearSVC, see get_default_svm() (default None)
     n_estimators : int
         Number of models to train in ensemble (default 100)
@@ -489,10 +490,9 @@ def gwas_rse_boruta(df_features, df_labels, base_model=None,
 
 def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None, 
              rse_kwargs={'n_estimators':100, 'max_samples':0.8, 'max_features':0.5,
-                         'bootstrap':True, 'bootstrap_features':False, 
-                         'sampling_strategy':'all'}, return_matrices=False):
+                         'bootstrap':True, 'bootstrap_features':False}, return_matrices=False):
     '''
-    Runs a random subspace ensemble using imblearn BalancedBaggingClassifier.
+    Runs a random subspace ensemble using BaggingClassifier.
     Can specify a base_model, or defaults to a L1-normalized, class weighted SVM.
     
     Parameters
@@ -505,12 +505,12 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
     null_shuffle : bool
         If True, randomly shuffles labels for null model testing (default False)
     base_model : sklearn classifier
-        Any sklearn classifier compatible with BalancedBaggingClassifier. 
+        Any sklearn classifier compatible with BaggingClassifier. 
         If None, uses sklearn.svm.LinearSVC, see get_default_svm() (default None)
     rse_kwargs : dict
-        Keyword arguments to pass to BalancedBaggingEnsemble.
+        Keyword arguments to pass to BaggingClassifier.
         (default {'n_estimators':100, 'max_samples':0.8, 'max_features':0.5,
-        'bootstrap':True, 'bootstrap_features':False, 'sampling_strategy':'all'})
+        'bootstrap':True, 'bootstrap_features':False})
     return_matrics : bool
         If True, returns X and y used for training (default False)
                 
@@ -521,8 +521,8 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
         Features excluded by feature bootstrapping have weight np.nan, compared
         to features included but unused which have weight 0. Only includes
         features that have a non-zero weight at least once.
-    rse : imblearn.ensemble.BalancedBaggingClassifier
-        Fitted ensemble model
+    rse : CarefulBaggingClassifier
+        Fitted ensemble (functionally identical to sklearn.ensemble.BaggingClassifier)
     X : np.ndarray
         Feature matrix used for training (if return_matrices is True)
     y : np.ndarray
@@ -536,7 +536,7 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
         base_clf = sklearn.base.clone(base_model)
     else: # defaulting to L1-SVM with class balance
         base_clf = get_default_svm()
-    rse_clf = imblearn.ensemble.BalancedBaggingClassifier(base_clf, **rse_kwargs)
+    rse_clf = mlrse.CarefulBaggingClassifier(base_clf, **rse_kwargs)
     
     ''' Train classifier '''
     rse_clf.fit(X,y)
@@ -547,8 +547,8 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
     weights = np.empty((n_features, n_estimators))
     weights[:] = np.nan
     for i in range(n_estimators):
-        # clf_coef = rse_clf.estimators_[i].coef_ # for BaggingClassifier
-        clf_coef = rse_clf.estimators_[i].named_steps.classifier.coef_ # for BalancedBaggingClassifier
+        clf_coef = rse_clf.estimators_[i].coef_ # for BaggingClassifier
+        # clf_coef = rse_clf.estimators_[i].named_steps.classifier.coef_ # for BalancedBaggingClassifier
         clf_feat = rse_clf.estimators_features_[i]
         weights[clf_feat,i] = clf_coef
     df_weights = pd.DataFrame(data=weights, index=df_features.index, 
@@ -797,25 +797,6 @@ def filter_nonvariable(df_features, min_variation=2):
 
 def get_default_svm(seed=None):
     ''' Default sklearn-compatible SVM classifier '''
-    base_clf = SafeLinearSVC(penalty='l1', loss='squared_hinge', 
+    base_clf = sklearn.svm.LinearSVC(penalty='l1', loss='squared_hinge', 
        dual=False, class_weight='balanced', random_state=seed)
     return base_clf
-
-
-class SafeLinearSVC(sklearn.svm.LinearSVC):
-    ''' 
-    LinearSVC modified to bootstrap correctly with BaggingClassifier 
-    (and by extension, BalancedBaggingClassifier).
-    
-    When bootstrapping, BaggingClassifier will generate sample_weights 
-    rather than create slices of the input matrix. However, LinearSVC
-    is unable to use sample_weights and will forgo bootstrapping entirely.
-    (see https://github.com/scikit-learn/scikit-learn/issues/10873)
-    
-    If the base estimator's fit() function does not support sample_weights, 
-    it will fall back on generating slices which will work correctly 
-    with LinearSVC. (see sklearn.ensemble._parallel_build_estimators).
-    '''
-    
-    def fit(self, X, y):
-        return super(SafeLinearSVC, self).fit(X, y)
