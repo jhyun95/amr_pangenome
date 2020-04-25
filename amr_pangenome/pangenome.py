@@ -19,6 +19,10 @@ import pandas as pd
 import numpy as np
 import scipy.sparse
 
+DNA_COMPLEMENT = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
+              'W': 'W', 'S': 'S', 'R': 'Y', 'Y': 'R', 
+              'M': 'K', 'K': 'M', 'N': 'N'}
+
 def build_cds_pangenome(genome_faa_paths, output_dir, name='Test', 
                         cdhit_args={'-n':5, '-c':0.8}, fastasort_path=None):
     ''' 
@@ -283,7 +287,10 @@ def rename_genes_and_alleles(clstr_file, nr_faa_file, nr_faa_out, feature_names_
             for line in f_faa_old:
                 if line[0] == '>': # writing updated header line
                     allele_header = line[1:].strip()
-                    allele_name = header_to_allele[allele_header]
+                    if allele_header in header_to_allele:
+                        allele_name = header_to_allele[allele_header]
+                    else:
+                        print 'MISSING:', allele_header
                     f_faa_new.write('>' + allele_name + '\n')
                 else: # writing sequence line
                     f_faa_new.write(line)
@@ -373,23 +380,29 @@ def build_genetic_feature_tables(clstr_file, genome_faa_paths, name='Test',
                 ''' Load all alleles and genes per genome '''
                 if line[0] == '>': # new header line encountered
                     if len(seq) > 0:
-                        allele = header_to_allele[header]
-                        allele_i = allele_indices[allele]
-                        allele_arrays[genome][allele_i] = 1
-                        gene = __get_gene_from_allele__(allele)
-                        gene_i = gene_indices[gene]
-                        gene_arrays[genome][gene_i] = 1
+                        if header in header_to_allele:
+                            allele_name = header_to_allele[header]
+                            allele_i = allele_indices[allele_name]
+                            allele_arrays[genome][allele_i] = 1
+                            gene = __get_gene_from_allele__(allele_name)
+                            gene_i = gene_indices[gene]
+                            gene_arrays[genome][gene_i] = 1
+                        else:
+                            print 'MISSING:', allele_header
                     header = __get_header_from_fasta_line__(line)
                     seq = '' # reset sequence
                 else: # sequence line encountered
                     seq += line.strip()
             if len(seq) > 0: # process last record
-                allele = header_to_allele[header]
-                allele_i = allele_indices[allele]
-                allele_arrays[genome][allele_i] = 1
-                gene = __get_gene_from_allele__(allele)
-                gene_i = gene_indices[gene]
-                gene_arrays[genome][gene_i] = 1
+                if header in header_to_allele:
+                    allele_name = header_to_allele[header]
+                    allele_i = allele_indices[allele_name]
+                    allele_arrays[genome][allele_i] = 1
+                    gene = __get_gene_from_allele__(allele_name)
+                    gene_i = gene_indices[gene]
+                    gene_arrays[genome][gene_i] = 1
+                else:
+                    print 'MISSING:', header
                 
         allele_arrays[genome] = pd.SparseArray(allele_arrays[genome])
         gene_arrays[genome] = pd.SparseArray(gene_arrays[genome])
@@ -499,14 +512,7 @@ def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,
     
     ''' Load header-allele name mapping '''
     print 'Loading header-allele mapping...'
-    feature_to_allele = {}
-    map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2]) # filter out locus tags
-    with open(allele_names, 'r') as f_all:
-        for line in f_all:
-            data = line.strip().split('\t')
-            allele = data[0]; synonyms = data[1:]
-            for synonym in synonyms:
-                feature_to_allele[map_feature_to_gffid(synonym)] = allele
+    feature_to_allele = __load_feature_to_allele__(allele_names)
         
     ''' Generate upstream sequences '''
     print 'Extracting upstream sequences...'
@@ -653,7 +659,7 @@ def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
     df_upstream = pd.DataFrame(data=genome_to_upstream, index=upstream_order)
     return df_upstream
 
-                
+
 def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50,3), 
                                feature_to_allele=None, allele_names=None, include_fragments=False):
     '''
@@ -676,7 +682,7 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
         upstream bases (up to but excluding first base of start codon) and Y coding 
         bases (including first base of start codon), for total length of X+Y bases
         (default (-50,3)) 
-    feature_to_allele : dict
+    feature_to_allele : dict, str
         Dictionary mapping original feature headers to <name>_C#A# short names,
         alternatively, the allele_names file can be provided (default None)
     allele_names : str
@@ -687,36 +693,74 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
         If true, include upstream sequences that are not fully available 
         due to contig boundaries (default False)
     '''
+    extract_proximal_sequences(genome_gff, genome_fna, upstream_out, limits, 'up',
+                               feature_to_allele, allele_names, include_fragments)
+
+    
+def extract_downstream_sequences(genome_gff, genome_fna, downstream_out, limits=(-3,50), 
+                                 feature_to_allele=None, allele_names=None, include_fragments=False):
+    '''
+    Extracts nucleotides downstream of coding sequences. Interprets GFFs as formatted by PATRIC:
+        1) Assumes contigs are labeled "accn|<contig>". 
+        2) Assumes protein features have ".peg." in the ID
+        3) Assumes ID = fig|<genome>.peg.#
+    Output features are named "<feature header>_downstream(<limit1>,<limit2>)". 
+    
+    Parameters
+    ----------
+    genome_gff : str
+        Path to genome GFF file with CDS coordinates
+    genome_fna : str
+        Path to genome FNA file with contig nucleotides
+    downstream_out : str
+        Path to output downstream sequences FNA files
+    limits : 2-tuple
+        Length of downstream region to extract, formatted (-X,Y). Will extract X 
+        bases at the end the coding sequence (i.e. if X=3, the stop codon), and
+        Y bases after the stop codon, for total length of X+Y bases (default (-3,50))
+    feature_to_allele : dict, str
+        Dictionary mapping original feature headers to <name>_C#A# short names,
+        alternatively, the allele_names file can be provided (default None)
+    allele_names : str
+        Path to allele names file if feature_to_allele is not provided,
+        should be named <name>_allele_names.tsv. If neither are provided,
+        simply processes all features present in the GFF (default None)
+    include_fragments : bool
+        If true, include downstream sequences that are not fully available 
+        due to contig boundaries (default False)
+    '''
+    extract_proximal_sequences(genome_gff, genome_fna, downstream_out, limits, 'down',
+                               feature_to_allele, allele_names, include_fragments)
+    
+                
+def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits=(-50,3), side='up',
+                               feature_to_allele=None, allele_names=None, include_fragments=False):
+    '''
+    Extracts nucleotides upstream or downstream of coding sequences. 
+    Refer to extract_upstream_sequences() and extract_downstream_sequences()
+    for parameters. Parameter 'side' determines if upstream or downstream ('up' or 'down')
+    '''
     
     ''' Load contig sequences '''
     contigs = load_sequences_from_fasta(genome_fna, header_fxn=lambda x: x.split()[0])
             
     ''' Load header-allele name mapping '''
-    map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2])
     if feature_to_allele: # dictionary provided directly
         feat_to_allele = feature_to_allele
     elif allele_names: # allele map file provided
-        feat_to_allele = {}
-        with open(allele_names, 'r') as f_all:
-            for line in f_all:
-                data = line.strip().split('\t')
-                allele = data[0]; synonyms = data[1:]
-                for synonym in synonyms:
-                    gff_synonym = map_feature_to_gffid(synonym)
-                    feat_to_allele[gff_synonym] = allele
+        feat_to_allele = __load_feature_to_allele__(allele_names)
     else: # no allele mapping, process everything
         feat_to_allele = None
                     
     ''' Parse GFF file for CDS coordinates '''
-    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
-                  'W': 'W', 'S': 'S', 'R': 'Y', 'Y': 'R', 
-                  'M': 'K', 'K': 'M', 'N': 'N'}
-    for bp in complement.keys():
-        complement[bp.lower()] = complement[bp].lower()
-    reverse_complement = lambda s: (''.join([complement[base] for base in list(s)]))[::-1]
-    feature_footer = '_upstream' + str(limits).replace(' ','')
-    upstream_count = 0
-    with open(upstream_out, 'w+') as f_ups:
+    for bp in DNA_COMPLEMENT.keys():
+        DNA_COMPLEMENT[bp.lower()] = DNA_COMPLEMENT[bp].lower()
+    reverse_complement = lambda s: (''.join([DNA_COMPLEMENT[base] for base in list(s)]))[::-1]
+    feature_footer = '_downstream' if side == 'down' else '_upstream'
+    feature_footer += str(limits).replace(' ','')
+    
+    proximal_count = 0
+    with open(proximal_out, 'w+') as f_prox:
         with open(genome_gff, 'r') as f_gff:
             for line in f_gff:
                 line = line.strip()
@@ -733,25 +777,37 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
                     if contig in contigs: 
                         if gffid in feat_to_allele or feat_to_allele is None:
                             contig_seq = contigs[contig]
-                            ''' Identify upstream sequence '''
-                            if strand == '+': # positive strand
-                                ups_start = start + limits[0] - 1
-                                ups_end = start + limits[1] - 1
-                                upstream = contig_seq[ups_start:ups_end].strip()
-                            else: # negative strand
-                                ups_start = stop - limits[1]
-                                ups_end = stop - limits[0] 
-                                upstream = contig_seq[ups_start:ups_end].strip()
-                                upstream = reverse_complement(upstream)
+                            ''' Identify proximal sequence '''
+                            if side == 'down': # downstream sequence
+                                if strand == '+': # positive strand
+                                    down_start = stop + limits[0]
+                                    down_end = stop + limits[1]
+                                    proximal = contig_seq[down_start:down_end].strip()
+                                else: # negative strand
+                                    down_start = start - limits[1] - 1
+                                    down_end = start - limits[0] - 1
+                                    proximal = contig_seq[down_start:down_end].strip()
+                                    proximal = reverse_complement(proximal)
+                            else: # default to upstream sequence
+                                if strand == '+': # positive strand
+                                    ups_start = start + limits[0] - 1
+                                    ups_end = start + limits[1] - 1
+                                    proximal = contig_seq[ups_start:ups_end].strip()
+                                else: # negative strand
+                                    ups_start = stop - limits[1]
+                                    ups_end = stop - limits[0] 
+                                    proximal = contig_seq[ups_start:ups_end].strip()
+                                    proximal = reverse_complement(proximal)
                                 
                             ''' Save upstream sequence '''
-                            if len(upstream) == -limits[0] + limits[1] or include_fragments:
-                                feat_name = gffid + feature_footer
-                                f_ups.write('>' + feat_name + '\n')
-                                f_ups.write(upstream + '\n')
-                                upstream_count += 1
-                                   
-    print 'Loaded upstream sequences:', upstream_count
+                            if len(proximal) == -limits[0] + limits[1] or include_fragments:
+                                feat_name = gffid + feature_footer + '_' + strand
+                                f_prox.write('>' + feat_name + '\n')
+                                f_prox.write(proximal + '\n')
+                                proximal_count += 1
+    
+    ftype = 'downstream' if side == 'down' else 'upstream'
+    print 'Loaded', ftype, 'sequences:', proximal_count
     
 
 def validate_gene_table(df_genes, df_alleles):
@@ -767,8 +823,8 @@ def validate_gene_table(df_genes, df_alleles):
     df_alleles : pd.DataFrame or str
         Either the allele x genome table, or path to the table
     '''
-    dfg = __load_feature_table__(df_genes)
-    dfa = __load_feature_table__(df_alleles)
+    dfg = load_feature_table(df_genes)
+    dfa = load_feature_table(df_alleles)
     print 'Validating gene clusters...'
     num_inconsistencies = 0
     for g,genome in enumerate(df_genes.columns):
@@ -797,8 +853,8 @@ def validate_gene_table_dense(df_genes, df_alleles):
     df_alleles : pd.DataFrame or str
         Either the allele x genome table, or path to the table
     '''
-    dfg = __load_feature_table__(df_genes)
-    dfa = __load_feature_table__(df_alleles)
+    dfg = load_feature_table(df_genes)
+    dfa = load_feature_table(df_alleles)
     print 'Validating gene clusters...'
     
     current_cluster = None; allele_data = []; 
@@ -848,7 +904,7 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
     alleles_faa : str
         Path to non-redundant sequences corresponding to df_alleles
     '''
-    dfa = __load_feature_table__(df_alleles)
+    dfa = load_feature_table(df_alleles)
     inconsistencies = 0
     
     ''' Pre-load hashes for non-redundant protein sequences '''
@@ -923,7 +979,7 @@ def validate_upstream_table(df_upstream, genome_fna_paths, nr_upstream_fna, limi
     limits : 2-tuple
         Upstream sequence limits specified when extracting upstream sequences (default (-50,3))
     '''
-    dfu = __load_feature_table__(df_upstream)
+    dfu = load_feature_table(df_upstream)
     
     ''' Reverse complement function for checking both strands '''
     complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
@@ -939,10 +995,10 @@ def validate_upstream_table(df_upstream, genome_fna_paths, nr_upstream_fna, limi
             
     ''' Verify present of each upstream sequence within each genome '''
     window = limits[1] - limits[0]
-    for genome_fna in genome_fna_paths:
+    for g, genome_fna in enumerate(genome_fna_paths):
         genome_contigs = load_sequences_from_fasta(genome_fna)
         genome = genome_fna.split('/')[-1][:-4]
-        print 'Evaluating', genome, genome_fna
+        print g+1, 'Evaluating', genome, genome_fna
         df_gups = dfu.loc[:,genome]
         table_ups = df_gups.index[pd.notnull(df_gups)] # upstream sequences as defined by the table
         table_ups_seqs = {nr_upstream[x]:x for x in table_ups} # maps sequences to names
@@ -998,7 +1054,7 @@ def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None):
             header_to_seq[header] = seq
     return header_to_seq
 
-def __load_feature_table__(feature_table):
+def load_feature_table(feature_table):
     ''' 
     Loads DataFrames from CSV, CSV.GZ, PICKLE, or PICKLE.GZ.
     Uses index_col=0 for CSVs. Returns feature_table if provided 
@@ -1036,6 +1092,20 @@ def __create_sparse_data_frame__(sparse_array, index, columns):
     df.index = pd.Index(index)
     df.columns = pd.Index(columns)
     return df
+
+
+def __load_feature_to_allele__(allele_names):
+    ''' Loads feature-to-allele mapping from file, usually <name>_allele_names.tsv. '''
+    map_feature_to_gffid = lambda x: '|'.join(x.split('|')[:2])
+    feat_to_allele = {}
+    with open(allele_names, 'r') as f_all:
+        for line in f_all:
+            data = line.strip().split('\t')
+            allele = data[0]; synonyms = data[1:]
+            for synonym in synonyms:
+                gff_synonym = map_feature_to_gffid(synonym)
+                feat_to_allele[gff_synonym] = allele
+    return feat_to_allele
                           
 def __get_gene_from_allele__(allele):
     ''' Converts <name>_C#A# allele to <name>_C# gene '''
