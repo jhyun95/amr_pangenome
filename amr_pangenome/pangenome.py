@@ -471,7 +471,7 @@ def load_header_to_allele(clstr_file=None, shared_header_file=None, header_to_al
                     for alt_header in headers[1:]:
                         full_header_to_allele[alt_header] = repr_allele
     return full_header_to_allele
-    
+
 
 def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,3), name='Test', 
                              include_fragments=False, fastasort_path=None):
@@ -479,26 +479,53 @@ def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,
     Extracts nucleotides upstream of coding sequences for multiple genomes, 
     create <genome>_upstream.fna files in the same directory for each genome.
     Then, classifies/names them relative to gene clusters identified by coding sequence,  
-    i.e. after build_cds_pangenome(). See extract_upstream_sequences() for more details.
+    i.e. after build_cds_pangenome(). See build_proximal_pangenome() for parameters.
+    '''
+    return build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side='up',
+                name=name, include_fragments=include_fragments, fastasort_path=fastasort_path)
+    
+
+def build_downstream_pangenome(genome_data, allele_names, output_dir, limits=(-3,50), name='Test', 
+                               include_fragments=False, fastasort_path=None):
+    '''
+    Extracts nucleotides downstream of coding sequences for multiple genomes, 
+    create <genome>_downstream.fna files in the same directory for each genome.
+    Then, classifies/names them relative to gene clusters identified by coding sequence,  
+    i.e. after build_cds_pangenome(). See build_proximal_pangenome() for parameters.
+    '''
+    return build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side='down',
+                name=name, include_fragments=include_fragments, fastasort_path=fastasort_path)
+
+    
+def build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side,
+                             name='Test', include_fragments=False, fastasort_path=None):
+    '''
+    Extracts nucleotides proximal to coding sequences for multiple genomes, 
+    create genome-specific proximal sequence fna files in the same directory for each genome.
+    Then, classifies/names them relative to gene clusters identified by coding sequence,  
+    i.e. after build_cds_pangenome(). See extract_proximal_sequences() and
+    consolidate_proximal() for more details.
     
     Parameters
     ----------
     genome_data : list
-        List of 2-tuples (genome_gff, genome_fna) for use by extract_upstream_sequences
+        List of 2-tuples (genome_gff, genome_fna) for use by extract_proximal_sequences()
     allele_names : str
         Path to allele names file, should be named <name>_allele_names.tsv
     output_dir : str
         Path to directory to generate summary outputs.
     limits : 2-tuple
-        Length of upstream region to extract, formatted (-X,Y). Will extract X 
-        upstream bases (up to but excluding first base of start codon) and Y coding 
-        bases (including first base of start codon), for total length of X+Y bases
-        (default (-50,3))
+        Length of proximal region to extract, formatted (-X,Y). For upstream, extracts X 
+        upstream bases (up to but excluding first base of start codon) and first Y coding 
+        bases (including first base of start codon). For downstream, extracts the last X
+        coding bases and Y downstream bases. In both cases, the total length is X+Y bases.
+    side : str
+        'up' for upstream, 'down' for downstream
     name : str
-        Short header to prepend output summary files, ideally same as what
+        Short header to prepend output summary files, recommendated to be same as what
         was used in the build_cds_pangenome() (default 'Test')
     include_fragments : bool
-        If true, include upstream sequences that are not fully available 
+        If true, include proximal sequences that are not fully available 
         due to contig boundaries (default False)
     fastasort_path : str
         Path to Exonerate's fastasort binary, optionally for sorting
@@ -506,182 +533,216 @@ def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,
         
     Returns
     -------
-    df_upstream : pd.DataFrame
-        Binary upstream x genome table
+    df_proximal : pd.DataFrame
+        Binary proximal x genome table
     '''
     
     ''' Load header-allele name mapping '''
     print 'Loading header-allele mapping...'
     feature_to_allele = __load_feature_to_allele__(allele_names)
+    ftype = {'up':'upstream', 'down':'downstream'}[side]
         
-    ''' Generate upstream sequences '''
-    print 'Extracting upstream sequences...'
-    genome_upstreams = []
+    ''' Generate proximal sequences '''
+    print 'Extracting', ftype, 'sequences...'
+    genome_proximals = []
     for i, gff_fna in enumerate(genome_data):
         ''' Prepare output path '''
         genome_gff, genome_fna = gff_fna
         genome = genome_gff.split('/')[-1][:-4] # trim off path and .gff
         genome_dir = '/'.join(genome_gff.split('/')[:-1]) + '/' if '/' in genome_gff else ''
-        genome_upstream_dir = genome_dir + 'derived/'
-        if not os.path.exists(genome_upstream_dir):
-            os.mkdir(genome_upstream_dir)
-        genome_upstream = genome_upstream_dir + genome + '_upstream.fna'
+        genome_prox_dir = genome_dir + 'derived/'
+        if not os.path.exists(genome_prox_dir):
+            os.mkdir(genome_prox_dir)
+        genome_prox = genome_prox_dir + genome + '_' + ftype + '.fna'
             
-        ''' Extract upstream sequences '''
+        ''' Extract proximal sequences '''
         print i+1, genome
-        genome_upstreams.append(genome_upstream)
-        extract_upstream_sequences(genome_gff, genome_fna, genome_upstream, limits=limits,
-                                   feature_to_allele=feature_to_allele, 
+        genome_proximals.append(genome_prox)
+        extract_proximal_sequences(genome_gff, genome_fna, genome_prox, 
+                                   limits=limits, side=side,
+                                   feature_to_allele=feature_to_allele,
                                    include_fragments=include_fragments)
         
-    ''' Consolidate non-redundant upstream sequences per gene '''
-    print 'Identifying non-redundant upstream sequences per gene...'
-    nr_upstream_out = output_dir + '/' + name + '_nr_upstream.fna'
-    nr_upstream_out = nr_upstream_out.replace('//','/')
-    df_upstream = consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele)
+    ''' Consolidate non-redundant proximal sequences per gene '''
+    print 'Identifying non-redundant', ftype, 'sequences per gene...'
+    nr_prox_out = output_dir + '/' + name + '_nr_' + ftype + '.fna'
+    nr_prox_out = nr_prox_out.replace('//','/')
+    df_proximal = consolidate_proximal(genome_proximals, nr_prox_out, feature_to_allele, side)
     
-    ''' Optionally sort non-redundant upstream sequences file '''
+    ''' Optionally sort non-redundant proximal sequences file '''
     if fastasort_path:
         print 'Sorting sequences by header...'
-        args = ['./' + fastasort_path, nr_upstream_out]
-        with open(nr_upstream_out + '.tmp', 'w+') as f_sort:
+        args = ['./' + fastasort_path, nr_prox_out]
+        with open(nr_prox_out + '.tmp', 'w+') as f_sort:
             sp.call(args, stdout=f_sort)
-        os.rename(nr_upstream_out + '.tmp', nr_upstream_out)
+        os.rename(nr_prox_out + '.tmp', nr_prox_out)
         
-    ''' Save upstream x genome table '''
-    upstream_table_out = output_dir + '/' + name + '_strain_by_upstream'
-    upstream_table_out = upstream_table_out.replace('//','/')
-    upstream_table_pickle = upstream_table_out + '.pickle.gz'
-    upstream_table_csv = upstream_table_out + '.csv.gz'
-    print 'Saving', upstream_table_pickle, '...'
-    df_upstream.to_pickle(upstream_table_pickle)
-    print 'Saving', upstream_table_csv, '...'
-    df_upstream.to_csv(upstream_table_csv)
-    return df_upstream
-    
+    ''' Save proximal x genome table '''
+    prox_table_out = output_dir + '/' + name + '_strain_by_' + ftype
+    prox_table_out = prox_table_out.replace('//','/')
+    prox_table_pickle = prox_table_out + '.pickle.gz'
+    prox_table_csv = prox_table_out + '.csv.gz'
+    print 'Saving', prox_table_pickle, '...'
+    df_proximal.to_pickle(prox_table_pickle)
+    print 'Saving', prox_table_csv, '...'
+    df_proximal.to_csv(prox_table_csv)
+    return df_proximal
 
-def consolidate_upstream(genome_upstreams, nr_upstream_out, feature_to_allele):
-    '''
-    Conslidates upstream sequences to a non-redundant set with respect 
-    to each gene described by feature_to_allele (maps features to <name>_C#A#),
-    then creates an upstream x genome binary table. Sequences in nr_upstream_out 
-    are sorted by order encountered, not gene.
+    
+def consolidate_proximal(genome_proximals, nr_proximal_out, feature_to_allele, side):
+    ''' 
+    Consolidates proximal sequences to a non-redudnant set with respect to each
+    gene described by feature_to_allele (maps_features to <name>_C#A#), then
+    creates a proximal x genome binary table. For use with fixed-length 3' or 5'UTRs.
+    Upstream features are <name>_C#U#, downstream features are <name>_C#D#.
     
     Parameters
     ----------
-    genome_upstreams : list
-        List of paths to upstream sequences FNA to combine
-    nr_upstream_out : str
-        Path to output non-redundant upstream sequences as FNA
+    genome_proximals : list
+        List of paths to proximal sequences FNA to combine
+    nr_proximal_out : str
+        Path to output non-redundant proximal sequences as FNA
     feature_to_allele : dict
         Dictionary mapping headers to <name>_C#A# alleles
+    side : str
+        'up' for upstream, 'down' for downstream
     
     Returns
     -------
-    df_upstream : pd.DataFrame
-         Binary upstream x genome table
+    df_proximal : pd.DataFrame
+         Binary proximal x genome table
     '''
-    gene_to_unique_upstream = {} # maps gene:upstream_seq:upstream_seq_id (int)
-    genome_to_upstream = {} # maps genome:upstream_name:1 if present (<name>_C#U#)
-    unique_upstream_ids = set() # record non-redundant list of upstream sequence IDs <name>_C#U#
-    genome_order = [] # sorted list of genomes inferred from upstream file names
     
-    with open(nr_upstream_out, 'w+') as f_nr_ups:
-        for genome_upstream in sorted(genome_upstreams):
+    ftype_abb = {'up':'U', 'down':'D'}[side]
+    ftype = {'up':'upstream', 'down':'downstream'}[side]
+    gene_to_unique_proximal = {} # maps gene:prox_seq:prox_seq_id (int)
+    genome_to_proximal = {} # maps genome:proximal_name:1 if present (<name>_C#U# or <name>_C#D#)
+    unique_proximal_ids = set() # record non-redundant list of proximal sequence IDs <name>_C#U# or <name>_C#D#
+    genome_order = [] # sorted list of genomes inferred from proximal sequence file names
+    
+    with open(nr_proximal_out, 'w+') as f_nr_prox:
+        for genome_proximal in sorted(genome_proximals):
             ''' Infer genome name from genome filename '''
-            genome = genome_upstream.split('/')[-1] # trim off full path
-            genome = genome.split('_upstream')[0] # remove _upstream.fna footer
-            genome_to_upstream[genome] = {}
+            genome = genome_proximal.split('/')[-1] # trim off full path
+            genome = genome.split('_' + ftype)[0] # remove .fna footer
+            genome_to_proximal[genome] = {}
             genome_order.append(genome)
             
-            ''' Process genome's upstream record '''
-            with open(genome_upstream, 'r') as f_ups: # reading current upstream
-                header = ''; upstream_seq = ''; new_sequence = False
-                for line in f_ups.readlines(): # slight speed up reading whole file at once, should only be few MBs
+            ''' Process genome's proximal record '''
+            with open(genome_proximal, 'r') as f_prox: # reading current proximal seq file
+                header = ''; prox_seq = ''; new_sequence = False
+                for line in f_prox.readlines(): # slight speed up reading whole file at once, should only be few MBs
                     if line[0] == '>': # header line
-                        if len(upstream_seq) > 0:
-                            ''' Process header-seq to non-redundant <name>_C#U# upstream allele '''
-                            feature = header.split('_upstream(')[0] # trim off "_upstream" footer
+                        if len(prox_seq) > 0:
+                            ''' Process header-seq to non-redundant <name>_C#<U/D># proximal allele '''
+                            feature = header.split('_' + ftype + '(')[0] # trim off "_<up/down>stream" footer
                             allele = feature_to_allele[feature] # get <name>_C#A# allele
                             gene = __get_gene_from_allele__(allele) # gene <name>_C# gene
-                            if not gene in gene_to_unique_upstream:
-                                gene_to_unique_upstream[gene] = {}
-                            if not upstream_seq in gene_to_unique_upstream[gene]:
-                                gene_to_unique_upstream[gene][upstream_seq] = len(gene_to_unique_upstream[gene])
-                                unique_upstream_ids.add(gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq]))
+                            if not gene in gene_to_unique_proximal:
+                                gene_to_unique_proximal[gene] = {}
+                            if not prox_seq in gene_to_unique_proximal[gene]:
+                                gene_to_unique_proximal[gene][prox_seq] = len(gene_to_unique_proximal[gene])
+                                prox_id = gene + ftype_abb + str(gene_to_unique_proximal[gene][prox_seq])
+                                unique_proximal_ids.add(prox_id)
                                 new_sequence = True
-                            upstream_id = gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq])
-                            genome_to_upstream[genome][upstream_id] = 1
+                            prox_id = gene + ftype_abb + str(gene_to_unique_proximal[gene][prox_seq])
+                            genome_to_proximal[genome][prox_id] = 1
                             
                             ''' Write renamed sequence to running file '''
                             if new_sequence:
-                                f_nr_ups.write('>' + upstream_id + '\n')
-                                f_nr_ups.write(upstream_seq + '\n')
+                                f_nr_prox.write('>' + prox_id + '\n')
+                                f_nr_prox.write(prox_seq + '\n')
                                 new_sequence = False
 
-                        header = line[1:].strip(); upstream_seq = ''
+                        header = line[1:].strip(); prox_seq = ''
                     else: # sequence line
-                        upstream_seq += line.strip()
+                        prox_seq += line.strip()
             
                 ''' Process last record'''
-                feature = header.split('_upstream(')[0] # trim off "_upstream" footer
+                feature = header.split('_' + ftype + '(')[0] # trim off "_<up/down>stream" footer
                 allele = feature_to_allele[feature] # get <name>_C#A# allele
                 gene = __get_gene_from_allele__(allele) # gene <name>_C# gene
-                if not gene in gene_to_unique_upstream:
-                    gene_to_unique_upstream[gene] = {}
-                if not upstream_seq in gene_to_unique_upstream[gene]:
-                    gene_to_unique_upstream[gene][upstream_seq] = len(gene_to_unique_upstream[gene])
-                    unique_upstream_ids.add(gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq]))
+                if not gene in gene_to_unique_proximal:
+                    gene_to_unique_proximal[gene] = {}
+                if not prox_seq in gene_to_unique_proximal[gene]:
+                    gene_to_unique_proximal[gene][prox_seq] = len(gene_to_unique_proximal[gene])
+                    prox_id = gene + ftype_abb + str(gene_to_unique_proximal[gene][prox_seq])
+                    unique_proximal_ids.add(prox_id)
                     new_sequence = True
-                upstream_id = gene + 'U' + str(gene_to_unique_upstream[gene][upstream_seq])
-                genome_to_upstream[genome][upstream_id] = 1
+                prox_id = gene + ftype_abb + str(gene_to_unique_proximal[gene][prox_seq])
+                genome_to_proximal[genome][prox_id] = 1
 
                 ''' Write renamed sequence to running file '''
                 if new_sequence:
-                    f_nr_ups.write('>' + upstream_id + '\n')
-                    f_nr_ups.write(upstream_seq + '\n')
+                    f_nr_prox.write('>' + prox_id + '\n')
+                    f_nr_prox.write(prox_seq + '\n')
                     new_sequence = False
                     
-    ''' Convert nested dict to dict of genome:SparseArrays once all upstream sequences are known '''
-    print 'Sparsifying upstream table...'
-    upstream_order = sorted(list(unique_upstream_ids))
-    del unique_upstream_ids
-    upstream_indices = {upstream_order[i]:i for i in range(len(upstream_order))} # map upstream ID to index
+    ''' Convert nested dict to dict of genome:SparseArrays once all proximal sequences are known '''
+    print 'Sparsifying', ftype, 'table...'
+    prox_order = sorted(list(unique_proximal_ids))
+    del unique_proximal_ids
+    prox_indices = {prox_order[i]:i for i in range(len(prox_order))} # map proximal ID to index
     for g,genome in enumerate(genome_order):
-        upstream_array = np.zeros(shape=len(upstream_order), dtype='int64')
-        for genome_ups in genome_to_upstream[genome].keys():
-            ups_i = upstream_indices[genome_ups]
-            upstream_array[ups_i] = 1
-        genome_to_upstream[genome] = pd.SparseArray(upstream_array)
-        genome_to_upstream[genome].fill_value = np.nan
+        prox_array = np.zeros(shape=len(prox_order), dtype='int64')
+        for genome_prox in genome_to_proximal[genome].keys():
+            prox_i = prox_indices[genome_prox]
+            prox_array[prox_i] = 1
+        genome_to_proximal[genome] = pd.SparseArray(prox_array)
+        genome_to_proximal[genome].fill_value = np.nan
         
     print 'Constructing DataFrame...'
-    df_upstream = pd.DataFrame(data=genome_to_upstream, index=upstream_order)
-    return df_upstream
+    df_proximal = pd.DataFrame(data=genome_to_proximal, index=prox_order)
+    return df_proximal
 
 
 def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50,3), 
                                feature_to_allele=None, allele_names=None, include_fragments=False):
     '''
-    Extracts nucleotides upstream of coding sequences. Interprets GFFs as formatted by PATRIC:
+    Extracts nucleotides upstream of coding sequences to file, default 50bp + start codon.
+    Refer to extract_proximal_sequences() for parameters.
+    '''
+    extract_proximal_sequences(genome_gff, genome_fna, proximal_out=upstream_out, 
+                               limits=limits, side='up', feature_to_allele=feature_to_allele, 
+                               allele_names=allele_names, include_fragments=include_fragments)
+
+    
+def extract_downstream_sequences(genome_gff, genome_fna, downstream_out, limits=(-3,50), 
+                                 feature_to_allele=None, allele_names=None, include_fragments=False):
+    '''
+    Extracts nucleotides downstream of coding sequences to file, default stop codon + 50 bp.
+    Refer to extract_proximal_sequences() for parameters.
+    '''
+    extract_proximal_sequences(genome_gff, genome_fna, proximal_out=downstream_out, 
+                               limits=limits, side='down', feature_to_allele=feature_to_allele, 
+                               allele_names=allele_names, include_fragments=include_fragments)
+    
+                
+def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, side,
+                               feature_to_allele=None, allele_names=None, include_fragments=False):
+    '''
+    Extracts nucleotides upstream or downstream of coding sequences. 
+    Interprets GFFs as formatted by PATRIC:
         1) Assumes contigs are labeled "accn|<contig>". 
         2) Assumes protein features have ".peg." in the ID
         3) Assumes ID = fig|<genome>.peg.#
-    Output features are named "<feature header>_upstream(<limit1>,<limit2>)". 
-    
+    Output features are named "<feature header>_<up/down>stream(<limit1>,<limit2>)". 
+        
     Parameters
     ----------
     genome_gff : str
         Path to genome GFF file with CDS coordinates
     genome_fna : str
         Path to genome FNA file with contig nucleotides
-    upstream_out : str
-        Path to output upstream sequences FNA files
+    proximal_out : str
+        Path to output upstream/downstream sequences FNA files
     limits : 2-tuple
-        Length of upstream region to extract, formatted (-X,Y). Will extract X 
-        upstream bases (up to but excluding first base of start codon) and Y coding 
-        bases (including first base of start codon), for total length of X+Y bases
-        (default (-50,3)) 
+        Length of proximal region to extract, formatted (-X,Y). For upstream, extracts X 
+        upstream bases (up to but excluding first base of start codon) and first Y coding 
+        bases (including first base of start codon). For downstream, extracts the last X
+        coding bases and Y downstream bases. In both cases, the total length is X+Y bases.
+    side : str
+        'up' if upstream, 'down' if downstream
     feature_to_allele : dict, str
         Dictionary mapping original feature headers to <name>_C#A# short names,
         alternatively, the allele_names file can be provided (default None)
@@ -692,53 +753,6 @@ def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50
     include_fragments : bool
         If true, include upstream sequences that are not fully available 
         due to contig boundaries (default False)
-    '''
-    extract_proximal_sequences(genome_gff, genome_fna, upstream_out, limits, 'up',
-                               feature_to_allele, allele_names, include_fragments)
-
-    
-def extract_downstream_sequences(genome_gff, genome_fna, downstream_out, limits=(-3,50), 
-                                 feature_to_allele=None, allele_names=None, include_fragments=False):
-    '''
-    Extracts nucleotides downstream of coding sequences. Interprets GFFs as formatted by PATRIC:
-        1) Assumes contigs are labeled "accn|<contig>". 
-        2) Assumes protein features have ".peg." in the ID
-        3) Assumes ID = fig|<genome>.peg.#
-    Output features are named "<feature header>_downstream(<limit1>,<limit2>)". 
-    
-    Parameters
-    ----------
-    genome_gff : str
-        Path to genome GFF file with CDS coordinates
-    genome_fna : str
-        Path to genome FNA file with contig nucleotides
-    downstream_out : str
-        Path to output downstream sequences FNA files
-    limits : 2-tuple
-        Length of downstream region to extract, formatted (-X,Y). Will extract X 
-        bases at the end the coding sequence (i.e. if X=3, the stop codon), and
-        Y bases after the stop codon, for total length of X+Y bases (default (-3,50))
-    feature_to_allele : dict, str
-        Dictionary mapping original feature headers to <name>_C#A# short names,
-        alternatively, the allele_names file can be provided (default None)
-    allele_names : str
-        Path to allele names file if feature_to_allele is not provided,
-        should be named <name>_allele_names.tsv. If neither are provided,
-        simply processes all features present in the GFF (default None)
-    include_fragments : bool
-        If true, include downstream sequences that are not fully available 
-        due to contig boundaries (default False)
-    '''
-    extract_proximal_sequences(genome_gff, genome_fna, downstream_out, limits, 'down',
-                               feature_to_allele, allele_names, include_fragments)
-    
-                
-def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits=(-50,3), side='up',
-                               feature_to_allele=None, allele_names=None, include_fragments=False):
-    '''
-    Extracts nucleotides upstream or downstream of coding sequences. 
-    Refer to extract_upstream_sequences() and extract_downstream_sequences()
-    for parameters. Parameter 'side' determines if upstream or downstream ('up' or 'down')
     '''
     
     ''' Load contig sequences '''
@@ -801,7 +815,7 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits=(-50
                                 
                             ''' Save upstream sequence '''
                             if len(proximal) == -limits[0] + limits[1] or include_fragments:
-                                feat_name = gffid + feature_footer + '_' + strand
+                                feat_name = gffid + feature_footer
                                 f_prox.write('>' + feat_name + '\n')
                                 f_prox.write(proximal + '\n')
                                 proximal_count += 1
