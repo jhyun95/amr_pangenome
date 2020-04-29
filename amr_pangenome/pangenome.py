@@ -22,6 +22,8 @@ import scipy.sparse
 DNA_COMPLEMENT = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
               'W': 'W', 'S': 'S', 'R': 'Y', 'Y': 'R', 
               'M': 'K', 'K': 'M', 'N': 'N'}
+for bp in DNA_COMPLEMENT.keys():
+    DNA_COMPLEMENT[bp.lower()] = DNA_COMPLEMENT[bp].lower()
 
 def build_cds_pangenome(genome_faa_paths, output_dir, name='Test', 
                         cdhit_args={'-n':5, '-c':0.8}, fastasort_path=None):
@@ -767,9 +769,6 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, sid
         feat_to_allele = None
                     
     ''' Parse GFF file for CDS coordinates '''
-    for bp in DNA_COMPLEMENT.keys():
-        DNA_COMPLEMENT[bp.lower()] = DNA_COMPLEMENT[bp].lower()
-    reverse_complement = lambda s: (''.join([DNA_COMPLEMENT[base] for base in list(s)]))[::-1]
     feature_footer = '_downstream' if side == 'down' else '_upstream'
     feature_footer += str(limits).replace(' ','')
     
@@ -822,8 +821,58 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, sid
     
     ftype = 'downstream' if side == 'down' else 'upstream'
     print 'Loaded', ftype, 'sequences:', proximal_count
-    
 
+    
+def extract_noncoding(genome_gff, genome_fna, noncoding_out, 
+                      allowed_features=['transcript', 'tRNA', 'rRNA', 'misc_binding']):
+    '''
+    Extracts nucleotides for non-coding sequences. 
+    Interprets GFFs as formatted by PATRIC:
+        1) Assumes contigs are labeled "accn|<contig>". 
+        2) Assumes protein features have ".peg." in the ID
+        3) Assumes ID = fig|<genome>.peg.#
+        
+    Parameters
+    ----------
+    genome_gff : str
+        Path to genome GFF file with CDS coordinates
+    genome_fna : str
+        Path to genome FNA file with contig nucleotides
+    noncoding_out : str
+        Path to output transcript sequences FNA files
+    allowed_features : list
+        List of GFF feature types to extract. Default excludes 
+        features labeled "CDS" or "repeat_region" 
+        (default ['transcript', 'tRNA', 'rRNA', 'misc_binding'])
+    '''
+    contigs = load_sequences_from_fasta(genome_fna, header_fxn=lambda x:x.split()[0])
+    with open(noncoding_out, 'w+') as f_noncoding:
+        with open(genome_gff, 'r') as f_gff:
+            for line in f_gff:
+                ''' Check for non-comment and non-empty line '''
+                if not line[0] == '#' and not len(line.strip()) == 0: 
+                    contig, src, feature_type, start, stop, \
+                        score, strand, phase, meta = line.split('\t')
+                    contig = contig[5:] # trim off "accn|" header
+                    start = int(start)
+                    stop = int(stop)
+                    
+                    if feature_type in allowed_features: 
+                        ''' Get noncoding feature sequence and ID '''
+                        contig_seq = contigs[contig]
+                        feature_seq = contig_seq[start-1:stop]
+                        if strand == '-': # negative strand
+                            feature_seq = reverse_complement(feature_seq)
+                        meta_key_vals = map(lambda x: x.split('='), meta.split(';'))
+                        metadata = {x[0]:x[1] for x in meta_key_vals}
+                        feature_id = metadata['ID']
+                        
+                        ''' Save to output file '''
+                        feature_seq = '\n'.join(feature_seq[i:i+70] for i in range(0, len(feature_seq), 70))
+                        f_noncoding.write('>' + feature_id + '\n')
+                        f_noncoding.write(feature_seq + '\n') 
+
+    
 def validate_gene_table(df_genes, df_alleles):
     '''
     Verifies that the gene x genome table is consistent with the
@@ -1083,6 +1132,12 @@ def load_feature_table(feature_table):
             return feature_table
     else: # non-string input
         return feature_table
+    
+    
+def reverse_complement(seq):
+    ''' Returns the reverse complement of a DNA sequence.
+        Supports lower/uppercase and ambiguous bases'''
+    return ''.join([DNA_COMPLEMENT[base] for base in list(seq)])[::-1]
 
 
 def __create_sparse_data_frame__(sparse_array, index, columns):
