@@ -1190,67 +1190,98 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa):
         inconsistencies += (1 - int(test))
         print test, len(table_alleles), len(genome_alleles)
     print 'Inconsistencies:', inconsistencies
-        
 
+    
 def validate_upstream_table(df_upstream, genome_fna_paths, nr_upstream_fna, limits=(-50,3)):
     '''
     Does a partial validation of the upstream x genome table by checking that
     the recorded upstream sequences are present in the corresponding genome, 
     and counts start codons observed. DOES NOT check the exact location of the
-    upstream sequences.
+    upstream sequences. See validate_proximal_table() for parameters.
+    '''
+    validate_proximal_table(df_upstream, genome_fna_paths, nr_upstream_fna, limits, 'upstream')
+
+    
+def validate_downstream_table(df_downstream, genome_fna_paths, nr_downstream_fna, limits=(-3,50)):
+    '''
+    Does a partial validation of the downstream x genome table by checking that
+    the recorded downstream downstream are present in the corresponding genome, 
+    and counts stop codons observed. DOES NOT check the exact location of the
+    downstream sequences. See validate_proximal_table() for parameters.
+    '''
+    validate_proximal_table(df_downstream, genome_fna_paths, nr_downstream_fna, limits, 'downstream')
+    
+
+def validate_proximal_table(df_prox, genome_fna_paths, nr_prox_fna, limits, side):
+    '''
+    Does a partial validation of the proximal x genome table by checking that
+    the recorded proximal sequences are present in the corresponding genome, 
+    and counts start codons observed. DOES NOT check the exact location of the
+    proximal sequences.
     
     Parameters
     ----------
-    df_upstream : pd.DataFrame or str
-        Either the upstream x genome table, or path to the table as CSV or CSV.GZ
+    df_prox : pd.DataFrame or str
+        Either the proximal x genome table, or path to the table as CSV or CSV.GZ
     genome_fna_paths : list
         Paths to FNAs for each genome's contigs
-    nr_upstream_fna : str
-        Path to FNA with non-redundant upstream sequences per gene
+    nr_prox_fna : str
+        Path to FNA with non-redundant proximal sequences per gene
     limits : 2-tuple
-        Upstream sequence limits specified when extracting upstream sequences (default (-50,3))
+        Proximal sequence limits specified when extracting upstream 
+        or downstream sequences (default (-50,3))
+    side : str
+        Either "upstream" or "downstream
     '''
-    dfu = load_feature_table(df_upstream)
+    dfp = load_feature_table(df_prox)
     
-    ''' Load non-redundant upstream sequences '''
-    print 'Loading upstream sequences...'
-    nr_upstream = load_sequences_from_fasta(nr_upstream_fna)
+    ''' Load non-redundant proximal sequences '''
+    print 'Loading', side, 'sequences...'
+    nr_prox = load_sequences_from_fasta(nr_prox_fna)
             
-    ''' Verify present of each upstream sequence within each genome '''
+    ''' Verify present of each proximal sequence within each genome '''
     window = limits[1] - limits[0]
     for g, genome_fna in enumerate(genome_fna_paths):
         genome_contigs = load_sequences_from_fasta(genome_fna)
         genome = genome_fna.split('/')[-1][:-4]
         print g+1, 'Evaluating', genome, genome_fna
-        df_gups = dfu.loc[:,genome]
-        table_ups = df_gups.index[pd.notnull(df_gups)] # upstream sequences as defined by the table
-        table_ups_seqs = {nr_upstream[x]:x for x in table_ups} # maps sequences to names
+        dfp_strain = dfp.loc[:,genome]
+        table_prox = dfp_strain.index[pd.notnull(dfp_strain)] # proximal sequences as defined by the table
+        table_prox_seqs = {nr_prox[x]:x for x in table_prox} # maps sequences to names
         
-        ''' Scan all contigs for detected upstream sequences '''
+        ''' Scan all contigs for detected fixed-length proximal sequences '''
         for contig in genome_contigs.values():
             for i in range(len(contig)):
                 segment = contig[i:i+window]
-                if segment in table_ups_seqs: 
-                    table_ups_seqs.pop(segment)
+                if segment in table_prox_seqs: 
+                    table_prox_seqs.pop(segment)
             rc_contig = reverse_complement(contig)
             for i in range(len(rc_contig)):
                 segment = rc_contig[i:i+window]
-                if segment in table_ups_seqs: 
-                    table_ups_seqs.pop(segment)
+                if segment in table_prox_seqs: 
+                    table_prox_seqs.pop(segment)
                     
-        ''' Report undetected upstream sequences '''
-        for ups in table_ups_seqs:
-            print '\tMissing', table_ups_seqs[ups], 'from', genome
+        ''' Report undetected proximal sequences '''
+        for prox in table_prox_seqs:
+            print '\tMissing', table_prox_seqs[prox], 'from', genome
         
-    ''' Count start codons among non-redundant upstream sequences '''
-    if limits[1] >= 3:
+    ''' Count start/stop codons among non-redundant proximal sequences '''
+    if limits[1] >= 3 and side == 'upstream':
         print 'Computing start codon distribution...'
         if limits[1] == 3:
             get_start = lambda x: x[-3:]
         else:
             get_start = lambda x: x[-limits[1]:-limits[1]+3]
-        start_codons = map(get_start, nr_upstream.values())
+        start_codons = map(get_start, nr_prox.values())
         print collections.Counter(start_codons)
+    elif limits[0] <= -3 and side == 'downstream':
+        print 'Computing stop codon distribution...'
+        if limits[0] == -3:
+            get_stop = lambda x: x[:3]
+        else:
+            get_stop = lambda x: x[-limits[0]-3:-limits[0]]
+        stop_codons = map(get_stop, nr_prox.values())
+        print collections.Counter(stop_codons)
     
 
 def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None):
