@@ -104,11 +104,11 @@ def plot_polar_dendogram(dend, figsize=(8,8), df_colors=None):
         x,y = label.get_position()
         label_text = label.get_text()
         shift = 0.007 * len(label_text)
-        if not df_colors is None:
-            color = df_colors.loc[label_text][0]
-            #print label_text, color
+        if not df_colors is None and label_text in df_colors.index:
+            color = df_colors.loc[label_text]
         else:
             color = 'black'
+        color = color if pd.notnull(color) else 'black'
         lab = ax.text(x,y-shift, label.get_text(), transform=label.get_transform(),
             ha=label.get_ha(), va=label.get_va(), color=color)
         

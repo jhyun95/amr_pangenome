@@ -18,7 +18,7 @@ Pan-genome feature nomenclature:
 <name>_T#A# = Noncoding transcript/RNA sequence variant
 """
 
-import os
+import os, shutil, urllib
 import subprocess as sp
 import hashlib 
 import collections
@@ -640,31 +640,35 @@ def load_header_to_allele(clstr_file=None, shared_header_file=None,
 
 
 def build_upstream_pangenome(genome_data, allele_names, output_dir, limits=(-50,3), name='Test', 
-                             include_fragments=False, fastasort_path=None):
+                             include_fragments=False, max_overlap=-1, fastasort_path=None):
     '''
     Extracts nucleotides upstream of coding sequences for multiple genomes, 
     create <genome>_upstream.fna files in the same directory for each genome.
     Then, classifies/names them relative to gene clusters identified by coding sequence,  
     i.e. after build_cds_pangenome(). See build_proximal_pangenome() for parameters.
     '''
-    return build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side='upstream',
-                name=name, include_fragments=include_fragments, fastasort_path=fastasort_path)
+    return build_proximal_pangenome(
+        genome_data, allele_names, output_dir, limits, 
+        side='upstream', name=name, include_fragments=include_fragments, 
+        max_overlap=max_overlap, fastasort_path=fastasort_path)
     
 
 def build_downstream_pangenome(genome_data, allele_names, output_dir, limits=(-3,50), name='Test', 
-                               include_fragments=False, fastasort_path=None):
+                               include_fragments=False, max_overlap=-1, fastasort_path=None):
     '''
     Extracts nucleotides downstream of coding sequences for multiple genomes, 
     create <genome>_downstream.fna files in the same directory for each genome.
     Then, classifies/names them relative to gene clusters identified by coding sequence,  
     i.e. after build_cds_pangenome(). See build_proximal_pangenome() for parameters.
     '''
-    return build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side='downstream',
-                name=name, include_fragments=include_fragments, fastasort_path=fastasort_path)
+    return build_proximal_pangenome(
+        genome_data, allele_names, output_dir, limits, 
+        side='downstream', name=name, include_fragments=include_fragments, 
+        max_overlap=max_overlap, fastasort_path=fastasort_path)
 
     
-def build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side,
-                             name='Test', include_fragments=False, fastasort_path=None):
+def build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side, name='Test', 
+                             include_fragments=False, max_overlap=-1, fastasort_path=None):
     '''
     Extracts nucleotides proximal to coding sequences for multiple genomes, 
     create genome-specific proximal sequence fna files in the same directory for each genome.
@@ -693,6 +697,10 @@ def build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side
     include_fragments : bool
         If true, include proximal sequences that are not fully available 
         due to contig boundaries (default False)
+    max_overlap : int
+        If non-negative, truncates UTRs that cross over into coding sequences
+        of other genes such that the overlap is no more than <max_overlap> nts.
+        If negative, does not truncate UTRs s.t. all UTRs same length (default -1)
     fastasort_path : str
         Path to Exonerate's fastasort binary, optionally for sorting
         final FNA files (default None)
@@ -726,7 +734,8 @@ def build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side
         extract_proximal_sequences(genome_gff, genome_fna, genome_prox, 
                                    limits=limits, side=side,
                                    feature_to_allele=feature_to_allele,
-                                   include_fragments=include_fragments)
+                                   include_fragments=include_fragments,
+                                   max_overlap=max_overlap)
         
     ''' Consolidate non-redundant proximal sequences per gene '''
     print 'Identifying non-redundant', side, 'sequences per gene...'
@@ -860,29 +869,31 @@ def consolidate_proximal(genome_proximals, nr_proximal_out, feature_to_allele, s
     return df_proximal
 
 
-def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50,3), 
+def extract_upstream_sequences(genome_gff, genome_fna, upstream_out, limits=(-50,3), max_overlap=-1,
                                feature_to_allele=None, allele_names=None, include_fragments=False):
     '''
     Extracts nucleotides upstream of coding sequences to file, default 50bp + start codon.
     Refer to extract_proximal_sequences() for parameters.
     '''
     extract_proximal_sequences(genome_gff, genome_fna, proximal_out=upstream_out, 
-                               limits=limits, side='upstream', feature_to_allele=feature_to_allele, 
-                               allele_names=allele_names, include_fragments=include_fragments)
+                               limits=limits, max_overlap=max_overlap, side='upstream', 
+                               feature_to_allele=feature_to_allele, allele_names=allele_names,
+                               include_fragments=include_fragments)
 
     
-def extract_downstream_sequences(genome_gff, genome_fna, downstream_out, limits=(-3,50), 
+def extract_downstream_sequences(genome_gff, genome_fna, downstream_out, limits=(-3,50), max_overlap=-1,
                                  feature_to_allele=None, allele_names=None, include_fragments=False):
     '''
     Extracts nucleotides downstream of coding sequences to file, default stop codon + 50 bp.
     Refer to extract_proximal_sequences() for parameters.
     '''
     extract_proximal_sequences(genome_gff, genome_fna, proximal_out=downstream_out, 
-                               limits=limits, side='downstream', feature_to_allele=feature_to_allele, 
-                               allele_names=allele_names, include_fragments=include_fragments)
+                               limits=limits, max_overlap=max_overlap, side='downstream', 
+                               feature_to_allele=feature_to_allele, allele_names=allele_names,
+                               include_fragments=include_fragments)
     
                 
-def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, side,
+def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, max_overlap, side,
                                feature_to_allele=None, allele_names=None, include_fragments=False):
     '''
     Extracts nucleotides upstream or downstream of coding sequences. 
@@ -905,6 +916,10 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, sid
         upstream bases (up to but excluding first base of start codon) and first Y coding 
         bases (including first base of start codon). For downstream, extracts the last X
         coding bases and Y downstream bases. In both cases, the total length is X+Y bases.
+    max_overlap : int
+        If non-negative, truncates UTRs that cross over into coding sequences
+        of other genes such that the overlap is no more than <max_overlap> nts.
+        If negative, does not truncate UTRs s.t. all UTRs same length (default -1)
     side : str
         'upstream' or 'downstream' for 5'UTR or 3'UTR
     feature_to_allele : dict, str
@@ -952,7 +967,8 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, sid
                     if contig in contigs: 
                         if gffid in feat_to_allele or feat_to_allele is None:
                             contig_seq = contigs[contig]
-                            ''' Identify proximal sequence '''
+                            ''' Identify proximal sequence 
+                                ### TODO: Truncating UTRs that overlap other genes '''
                             if side == 'downstream': # downstream sequence
                                 if strand == '+': # positive strand
                                     down_start = stop + limits[0]
@@ -1217,7 +1233,7 @@ def validate_proximal_table(df_prox, genome_fna_paths, nr_prox_fna, limits, side
     Does a partial validation of the proximal x genome table by checking that
     the recorded proximal sequences are present in the corresponding genome, 
     and counts start codons observed. DOES NOT check the exact location of the
-    proximal sequences.
+    proximal sequences. TODO: Does not yet support non-fixed length UTRs.
     
     Parameters
     ----------
@@ -1282,6 +1298,98 @@ def validate_proximal_table(df_prox, genome_fna_paths, nr_prox_fna, limits, side
             get_stop = lambda x: x[-limits[0]-3:-limits[0]]
         stop_codons = map(get_stop, nr_prox.values())
         print collections.Counter(stop_codons)
+
+        
+def extract_annotations(genome_gffs, allele_name_file, annotations_out, 
+                        batch=100, collapse_alleles=True):
+    '''
+    For a given allele name file (usually <org>_allele_names.tsv),
+    extracts the corresponding PATRIC annotations from original gff files.
+    Can load gff files in batches to limit memory usage.
+    
+    Parameters
+    ----------
+    genome_gffs : list
+        List of paths to GFF files
+    allele_name_file : str
+        Path to file with allele-protein ID map, usually <org>_allele_names.tsv
+    annotations_out : str
+        Path to output annotations. Will also create a .tmp intermediate.
+    batch : int
+        Maximum GFF files to load into at once
+    collapse_alleles : bool
+        If True, reports annotations at the gene level, using the most common allele
+        annotation. Alleles with non-plurality annotation are reported separately.
+        If False, reports all unique annotations for all alleles. (default True)
+    '''
+    
+    ''' Copy allele name table '''
+    tmp_out = annotations_out + '.tmp'
+    shutil.copyfile(allele_name_file, tmp_out)
+    
+    ''' Iteratively replace protein IDs with annotations from GFFs (in batches) '''
+    n_gffs = len(genome_gffs)
+    for g in range(0,n_gffs,batch):
+        ''' Load annotations for batch of GFFs '''
+        annotations = {}
+        for gff in genome_gffs[g:g+batch]:
+            with open(gff,'r') as f_gff:
+                for line in f_gff:
+                    data = line.strip().split('\t')
+                    if len(data) == 9: 
+                        line_annots = data[-1].split(';')
+                        line_annots = dict(map(lambda x: x.split('='), line_annots))
+                        if 'ID' in line_annots and 'product' in line_annots:
+                            product = line_annots['product']
+                            product = urllib.unquote(product) # replace % hex characters
+                            fid = line_annots['ID']
+                            if 'locus_tag' in line_annots:
+                                fid += '|' + line_annots['locus_tag']
+                            annotations[fid] = product
+        print 'Loaded', len(annotations), 'annotations from batch', g+1, '-', min(n_gffs,g+batch)
+        
+        ''' Incorporate newly loaded annotations '''
+        with open(tmp_out, 'r') as f_last:
+            with open(tmp_out+'2', 'w+') as f_next:
+                for line in f_last:
+                    data = line.strip().split('\t')
+                    allele = data[0]; fids = data[1:]
+                    fids = map(lambda x: annotations[x] if x in annotations else x, fids)
+                    fids = list(collections.OrderedDict.fromkeys(fids)) # remove duplicate annotations
+                    output = allele + '\t' + '\t'.join(fids)
+                    f_next.write(output + '\n')
+        shutil.move(tmp_out+'2', tmp_out) # remove last round
+
+    ''' Optionally collapse allele-level annotations to gene-level '''
+    if collapse_alleles:
+        with open(tmp_out, 'r') as f_last:
+            current_cluster = None
+            with open(annotations_out, 'w+') as f_next:
+                for line in f_last:
+                    data = line.strip().split('\t')
+                    allele = data[0]
+                    cluster =  __get_gene_from_allele__(allele)
+                    allele_annots = '\t'.join(data[1:])
+                    if current_cluster is None: # initialize first cluster
+                        current_cluster = cluster
+                        cluster_alleles = [allele]
+                        cluster_annots = [allele_annots]
+                    elif cluster == current_cluster: # continuing current cluster
+                        cluster_alleles.append(allele)
+                        cluster_annots.append(allele_annots)
+                    else: # start of new cluster
+                        most_common_annot, count = collections.Counter(cluster_annots).most_common(1)[0]
+                        f_next.write(current_cluster + '\t' + most_common_annot + '\n')
+                        for i, annots in enumerate(cluster_annots):
+                            if annots != most_common_annot:
+                                f_next.write(cluster_alleles[i] + '\t' + annots + '\n')
+                        # Initialize next cluster
+                        current_cluster = cluster
+                        cluster_alleles = [allele]
+                        cluster_annots = [allele_annots]
+        os.remove(tmp_out)
+    else: 
+        shutil.move(tmp_out, annotations_out)
     
 
 def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None):
