@@ -901,7 +901,10 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, max
         1) Assumes contigs are labeled "accn|<contig>". 
         2) Assumes protein features have ".peg." in the ID
         3) Assumes ID = fig|<genome>.peg.#
-    Output features are named "<feature header>_<up/down>stream(<limit1>,<limit2>)". 
+    Output features are named "<feature header>_<up/down>stream(<limit1>,<limit2>)" 
+    if overlap is not restricted, otherwise features are named:
+    "<feature header>_<up/down>stream(<limit1>,<limit2>,<max_overlap>)"
+    Excludes features that do not have any UTR bases.
         
     Parameters
     ----------
@@ -919,7 +922,8 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, max
     max_overlap : int
         If non-negative, truncates UTRs that cross over into coding sequences
         of other genes such that the overlap is no more than <max_overlap> nts.
-        If negative, does not truncate UTRs s.t. all UTRs same length (default -1)
+        If negative, does not truncate UTRs s.t. all UTRs same length. 
+        Note: Requires that GFF has features sorted by position.
     side : str
         'upstream' or 'downstream' for 5'UTR or 3'UTR
     feature_to_allele : dict, str
@@ -933,7 +937,65 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, max
         If true, include upstream sequences that are not fully available 
         due to contig boundaries (default False)
     '''
+
+    def extract_utr(start, stop, strand, contig, contig_seq, occupancy):
+        ''' Calculate ideal bounds for UTR, without accounting for overlap '''
+        pos = (side, strand)
+        utr_side = start if pos in [('upstream','+'),('downstream','-')] else stop # side UTR effectively starts from
+        utr_limits = limits if strand == '+' else (-limits[1], -limits[0]) # how to extend UTR bounds
+        utr_start = utr_side + utr_limits[0]
+        utr_stop = utr_side + utr_limits[1]
+        
+        ''' Optionally account for overlap '''
+        if max_overlap >= 0: # checking CDS-UTR overlaps
+            leftbound, rightbound = strand_occupancy[contig][strand][(start, stop)]
+            leftbound -= max_overlap
+            rightbound += max_overlap
+            if utr_start < leftbound: # 5' overlap exceeds limit
+                utr_start = leftbound
+                #print 'UTR start overlap for', start, stop
+            if utr_stop > rightbound: # 3' overlap exceeds limit
+                utr_stop = rightbound
+                #print 'UTR stop overlap for', start, stop
+            
+        ''' Extract UTR from computed bounds, RC if negative strand '''
+        proximal = contig_seq[utr_start:utr_stop].strip()
+        proximal = reverse_complement(proximal) if strand == '-' else proximal
+        is_fragment = (utr_start < 0) or (utr_stop > len(contig_seq)) # if cut-off by contig bounds
+        return proximal, is_fragment
     
+    
+    strand_occupancy = {} # maps contig:strand:(start,stop):[(left start,stop), (right start,stop)]
+    if max_overlap >= 0:   
+        ''' Load feature order on each contig and each strand '''
+        occupancies = {}
+        with open(genome_gff, 'r') as f_gff:
+            for line in f_gff:
+                line = line.strip()
+                if len(line) > 0 and line[0] != '#':
+                    contig, src, feat_type, start, stop, score, \
+                        strand, phase, attr_raw = line.split('\t')
+                    if feat_type == 'CDS': # only consider CDS-UTR overlaps
+                        contig = contig.split('|')[-1] # accn|<contig> to just <contig>
+                        if not contig in occupancies:
+                            occupancies[contig] = {'+':[], '-':[]}
+                        start = int(start) - 1 # starts are 1-indexed
+                        stop = int(stop) # stops 1-indexed, inclusive = correct exclusive bound
+                        occupancies[contig][strand].append( (start, stop) )
+                         
+        ''' Convert feature order to 5'/3' neighbors pairs '''
+        for contig in occupancies:
+            strand_occupancy[contig] = {'+':{}, '-':{}}
+            for strand in occupancies[contig]:
+                n_features = len(occupancies[contig][strand])
+                for i, feature in enumerate(occupancies[contig][strand]): # features in order on strand
+                    leftbound = (-np.inf,-np.inf) if i == 0 else occupancies[contig][strand][i-1]
+                    rightbound = (np.inf,np.inf) if i == n_features-1 else occupancies[contig][strand][i+1]
+                    leftbound = leftbound[1] # take 3' end of nearest CDS to the 5' side
+                    rightbound = rightbound[0] # take 5' end of nearest CDS to the 3' end
+                    strand_occupancy[contig][strand][feature] = (leftbound, rightbound) 
+        del occupancies
+                        
     ''' Load contig sequences '''
     contigs = load_sequences_from_fasta(genome_fna, header_fxn=lambda x: x.split()[0])
             
@@ -947,17 +1009,20 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, max
                     
     ''' Parse GFF file for CDS coordinates '''
     feature_footer = '_' + side
-    feature_footer += str(limits).replace(' ','')
-    
-    proximal_count = 0
+    params = (limits[0], limits[1], max_overlap) if max_overlap > 0 else limits
+    feature_footer += str(params).replace(' ','')
+    proximal_count = 0 # total UTRs extracted
+    coding_length = limits[1] if side == 'upstream' else -limits[0] # bases of UTR that overlap with reference gene CDS
     with open(proximal_out, 'w+') as f_prox:
         with open(genome_gff, 'r') as f_gff:
             for line in f_gff:
                 line = line.strip()
                 if len(line) > 0 and line[0] != '#':
-                    contig, src, feat_type, start, stop, score, strand, phase, attr_raw = line.split('\t')
+                    contig, src, feat_type, start, stop, score, \
+                        strand, phase, attr_raw = line.split('\t')
                     contig = contig.split('|')[-1] # accn|<contig> to just <contig>
-                    start = int(start); stop = int(stop)
+                    start = int(start) - 1 # starts are 1-indexed, inclusive
+                    stop = int(stop) # stops 1-indexed, inclusive = correct exclusive bound
                     attrs = {} # key:value
                     for entry in attr_raw.split(';'):
                         k,v = entry.split('='); attrs[k] = v
@@ -967,36 +1032,15 @@ def extract_proximal_sequences(genome_gff, genome_fna, proximal_out, limits, max
                     if contig in contigs: 
                         if gffid in feat_to_allele or feat_to_allele is None:
                             contig_seq = contigs[contig]
-                            ''' Identify proximal sequence 
-                                ### TODO: Truncating UTRs that overlap other genes '''
-                            if side == 'downstream': # downstream sequence
-                                if strand == '+': # positive strand
-                                    down_start = stop + limits[0]
-                                    down_end = stop + limits[1]
-                                    proximal = contig_seq[down_start:down_end].strip()
-                                else: # negative strand
-                                    down_start = start - limits[1] - 1
-                                    down_end = start - limits[0] - 1
-                                    proximal = contig_seq[down_start:down_end].strip()
-                                    proximal = reverse_complement(proximal)
-                            else: # default to upstream sequence
-                                if strand == '+': # positive strand
-                                    ups_start = start + limits[0] - 1
-                                    ups_end = start + limits[1] - 1
-                                    proximal = contig_seq[ups_start:ups_end].strip()
-                                else: # negative strand
-                                    ups_start = stop - limits[1]
-                                    ups_end = stop - limits[0] 
-                                    proximal = contig_seq[ups_start:ups_end].strip()
-                                    proximal = reverse_complement(proximal)
+                            proximal, is_fragment = extract_utr(start, stop, strand, contig, contig_seq, strand_occupancy)
                                 
-                            ''' Save upstream sequence '''
-                            if len(proximal) == -limits[0] + limits[1] or include_fragments:
+                            ''' Save proximal sequence '''
+                            if len(proximal) > coding_length and (not is_fragment or include_fragments):
                                 feat_name = gffid + feature_footer
                                 f_prox.write('>' + feat_name + '\n')
                                 f_prox.write(proximal + '\n')
                                 proximal_count += 1
-    
+                                
     print 'Loaded', side, 'sequences:', proximal_count
 
     
