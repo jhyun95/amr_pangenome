@@ -42,7 +42,7 @@ def plot_strain_hierarchy(df_features, df_labels=None, colors={1:'red', 0:'blue'
     print 'Computing pairwise Jaccard distances...'
     is_sparse = reduce(lambda x,y: x and y, map(lambda x: 'sparse' in x, df_features.ftypes))
     if is_sparse: # columns are SparseArrays
-        spdata = __sparse_arrays_to_sparse_matrix__(df_features)
+        spdata = __sparse_arrays_to_sparse_matrix__(df_features).tocsc() # df -> COO -> CSC
         distances = __fast_pairwise_jaccard__(spdata)
     else: # columns are dense
         distances = _fast_pairwise_jaccard__(df_features.values)
@@ -123,8 +123,7 @@ def plot_polar_dendogram(dend, figsize=(8,8), df_colors=None):
 def __sparse_arrays_to_sparse_matrix__(dfs):
     '''
     Converts a binary DataFrame with SparseArray columns into a
-    scipy.sparse.csc_matrix (Compressed Sparse Column). Creates
-    a coo_matrix intermediate.
+    scipy.sparse.coo_matrix.
     '''
     num_entries = dfs.fillna(0).sum().sum()
     positions = np.empty((2,num_entries), dtype='int')
@@ -138,7 +137,7 @@ def __sparse_arrays_to_sparse_matrix__(dfs):
         fill_values[current:current+col_num_entries] = col_entries.sp_values
         current += col_num_entries
     spdata = scipy.sparse.coo_matrix((fill_values, positions), shape=dfs.shape)
-    return spdata.tocsc()
+    return spdata
 
 
 def __fast_pairwise_jaccard__(mat):

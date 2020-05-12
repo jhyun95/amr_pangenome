@@ -20,7 +20,7 @@ import sklearn.metrics, sklearn.model_selection
 import imblearn.ensemble
 import xgboost as xgb
 
-import mlrse
+import mlrse, phylo
 
 
 def plot_grid_search_performance(df_reports, params, grouping='case', figsize=None):
@@ -72,7 +72,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
     fixed_parameters={'bootstrap':True, 'bootstrap_features':False,
                       'SVM_penalty':'l1', 'SVM_loss':'squared_hinge',
                       'SVM_dual':False, 'SVM_class_weight':'balanced'},
-    n_jobs=1, seed=1):
+    n_jobs=1, cv_jobs=1, seed=1):
     '''
     Grid search for SVM-RSE. For the specified hyperparameter space, 
     computes the GWAS score, ranks of known AMR genes, test MCC from 
@@ -100,7 +100,10 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         Keys are either kwargs for sklearn.ensemble.BaggingClassifier, 
         or if preceded by "SVM_", kwargs for sklearn.svm.LinearSVC.
     n_jobs : int
-        Number of jobs, overrides parameter dictionaries (default 1)
+        Number of jobs per model, overrides parameter dictionaries (default 1)
+    cv_jobs : int
+        Number of jobs per cv-fold, total maximum threads will be 
+        n_jobs * cv_jobs. Best values are 1 or 5 (default 5).
     seed : int
         Randomization seed, overrides parameter dictionaries (default 1)
         
@@ -157,7 +160,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         print '\tTraining 5CV (MCC)...',
         t = time.time()
         mcc_scores = sklearn.model_selection.cross_val_score(
-            clf, X=X, y=y, scoring=mcc_scorer, cv=5)
+            clf, X=X, y=y, scoring=mcc_scorer, cv=5, n_jobs=cv_jobs)
         mcc_avg = np.mean(mcc_scores)
         time_5cv = time.time() - t
         print round3(time_5cv) 
@@ -619,6 +622,95 @@ def gwas_fisher_exact(df_features, df_labels, null_shuffle=False, report_rate=10
     df_output['oddsratio'] = oddsratios
     return df_output
 
+
+def compress_features(df_features, feature_block_file=None):
+    '''
+    Takes a binary feature x sample DataFrame and combines features 
+    that occur in the identical set of samples. Yields features named 'B#'.
+    
+    1) Converts SparseArray columns to COO matrix
+    2) Converts to LIL for direct access to row data for sorting
+    3) Iterates through sorted rows to combine statistically identical features
+    4) Creates COO matrix from feature blocks
+    5) Converts COO matrix -> CSR matrix -> SparseArray DataFrame
+    
+    Parameters
+    ----------
+    df_features : pd.DataFrame
+        Binary feature x sample DataFrame. Supports SparseArray columns.
+    feature_block_file : str
+        If not None, path to output what features are mapped to 
+        which blocks (default None).
+        
+    Returns
+    -------
+    df_block : pd.DataFrame
+        Binary feature block x sample DataFrame with SparseArray columns
+    block_features : list
+        List of lists with names of features in each block.
+        For example block_features[3] = feature in block "B3"
+    '''
+    
+    ''' Sort features by occurence in samples '''
+    is_sparse = reduce(lambda x,y: x and y, map(lambda x: 'sparse' in x, df_features.ftypes))
+    if is_sparse: # sorting rows of sparse matrix
+        spdata = phylo.__sparse_arrays_to_sparse_matrix__(df_features).tolil()
+        dfsg = pd.Series(index=df_features.index, data=spdata.rows).sort_values()
+        del spdata
+    else: # sorting rows of dense matrix
+        pass # TODO
+
+    ''' Combine features into blocks with identical occurence '''
+    block_features = [] # maps feature block to related features
+    row_indices = []; col_indices = []; last_occurence = None
+    for feat, occur in dfsg.iteritems(): 
+        if occur != last_occurence: # new feature by occurence
+            last_occurence = occur
+            col_indices.append(np.array(occur))
+            row_indices.append(np.full(len(occur), len(block_features)))
+            block_features.append([feat])
+        else: # feature with same occurence
+            block_features[-1].append(feat)
+    del dfsg
+    row_indices = np.hstack(row_indices)
+    col_indices = np.hstack(col_indices)
+    data = np.ones(row_indices.shape)
+    blockdata = scipy.sparse.coo_matrix((data, (row_indices, col_indices))).tocsc()
+    del row_indices, col_indices, data
+
+    ''' Convert CSC block x sample matrix to DataFrame of SparseArrays '''
+    sparse_vals = {}
+    for c, sample in enumerate(df_features.columns):
+        sample_data = blockdata[:,c].toarray().reshape(-1)
+        sparse_vals[sample] = pd.SparseArray(sample_data, fill_value=0)
+        sparse_vals[sample].fill_value = np.nan
+    del blockdata
+    blocks = map(lambda x: 'B' + str(x), range(len(block_features)))
+    df_block = pd.DataFrame(sparse_vals, index=blocks)
+    return df_block, block_features
+
+
+def check_feature_blocks(df_block, block_features, df_features, reporting=100):
+    ''' 
+    Verifies that feature blocks generated by compress_features() 
+    are consistent with the original feature matrix.
+    '''
+    errors = 0
+    for b, features in enumerate(block_features):
+        if b % reporting == 0:
+            print 'Checking B' + str(b), '| Cumulative errors:', errors
+        block_name = 'B' + str(b)
+        block_occur = df_block.loc[block_name,:].fillna(0).values
+        for feature in features:
+            feature_occur = df_features.loc[feature,:].fillna(0).values
+            matched = np.array_equal(feature_occur, block_occur)
+            if not matched:
+                print feature, block_name
+                print '\t', block_occur
+                print '\t', feature_occur
+                errors += 1
+    print 'Rows with errors:', errors
+        
 
 def make_amr_gwas_data_generator(df_features, df_amr, max_imbalance=0.95, min_variation=2, 
                                  binarize=True, drugs=None):
