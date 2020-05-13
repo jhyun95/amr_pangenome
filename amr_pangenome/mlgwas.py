@@ -20,7 +20,7 @@ import sklearn.metrics, sklearn.model_selection
 import imblearn.ensemble
 import xgboost as xgb
 
-import mlrse, phylo
+import mlrse
 
 
 def plot_grid_search_performance(df_reports, params, grouping='case', figsize=None):
@@ -72,7 +72,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
     fixed_parameters={'bootstrap':True, 'bootstrap_features':False,
                       'SVM_penalty':'l1', 'SVM_loss':'squared_hinge',
                       'SVM_dual':False, 'SVM_class_weight':'balanced'},
-    n_jobs=1, cv_jobs=1, seed=1):
+    compress_redundant_features=False, n_jobs=1, cv_jobs=1, seed=1):
     '''
     Grid search for SVM-RSE. For the specified hyperparameter space, 
     computes the GWAS score, ranks of known AMR genes, test MCC from 
@@ -99,6 +99,10 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         Dictionary mapping parameters to values to be held constant.
         Keys are either kwargs for sklearn.ensemble.BaggingClassifier, 
         or if preceded by "SVM_", kwargs for sklearn.svm.LinearSVC.
+    compress_redundant_features : bool
+        If True, combines features that are statistically identical into 
+        feature "blocks". After training, all features get the weight of their
+        parent block, which is used for GWAS evaluation (default False).
     n_jobs : int
         Number of jobs per model, overrides parameter dictionaries (default 1)
     cv_jobs : int
@@ -112,7 +116,6 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
     df_report : pd.DataFrame
         DataFrame with model data for all hyperparameter combinations.
     '''
-    
     def split_params(params):
         ''' Split ensemble-level and model-level parameters '''
         ensemble_params = {}; svm_params = {}
@@ -122,6 +125,12 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
             else: # ensemble-level parm
                 ensemble_params[param] = value
         return ensemble_params, svm_params
+    
+    if compress_redundant_features: # combining identical features
+        df_feat, block_features = compress_features(df_features)
+        print 'Compressed features:', df_feat.shape
+    else: # otherwise use original features directly
+        df_feat = df_features; block_features = None
         
     report_values = []
     param_columns = list(parameter_sweep.keys())
@@ -144,14 +153,16 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         print '\tTraining full (GWAS)...',
         t = time.time()
         base_clf = sklearn.svm.LinearSVC(**svm_params)
-        df_weights, clf, X, y = gwas_rse(df_features, df_labels, null_shuffle=False,
+        df_weights, clf, X, y = gwas_rse(df_feat, df_labels, null_shuffle=False,
              base_model=base_clf, rse_kwargs=rse_params, return_matrices=True)
+        if compress_redundant_features:
+            df_weights = expand_block_features(df_weights, block_features)
             
         aro_hit_count = df_aro[pd.notnull(df_aro.loc[:,drug])].shape[0]
         if aro_hit_count == 0: # no reference hits, cannot score based on GWAS
             gwas_score = np.nan; gwas_ranks = [np.nan]
         else: # reference hits available
-            df_eval = evaluate_gwas(df_weights, df_aro, drug, signed_weights=True)
+            df_eval = evaluate_gwas(df_weights, df_aro, drug, signed_weights=True, block_features=block_features)
             gwas_score, gwas_ranks = score_ranking(df_eval, signed_weights=True)
         time_gwas = time.time() - t
         print round3(time_gwas)
@@ -176,65 +187,6 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
     df_report = pd.DataFrame(columns=columns, data=report_values)
     return df_report
 
-
-def grid_search_svm_rse_old(df_features, df_labels, df_aro, drug,
-    n_estimators=[50,100,200,400,800], max_features=[1.0,0.75,0.50,0.25], 
-    C=[0.01,0.1,1,10,100], n_jobs=1, seed=None):
-    ''' 
-    Grid search to get SVM-RSE performance for different hyperparameter 
-    settings, on the basis of both prediction MCC (from 5-fold CV) and 
-    GWAS feature selection (relative to df_aro). Bootstrap fraction is 
-    fixed to 80%, classifier to linear SVM with L1, squared_hinge, balanced.
-    Not using sklearn automated method, due to multiple evaluation functions.
-    
-    Old version, use grid_search_svm_rse().
-    '''
-    mcc_scorer = sklearn.metrics.make_scorer(sklearn.metrics.matthews_corrcoef)
-    round3 = lambda x: round(x,3)
-    report_values = []
-    for n_est in n_estimators:
-        for max_feat in max_features:
-            for Cparam in C:
-                print (n_est, max_feat, Cparam)
-                ''' Build base model with C parameter set '''
-                base_clf = get_default_svm(seed=seed)
-                
-                ''' Train SVM-RSE on full data for weights -> ranks -> GWAS score '''
-                print '\tTraining full (GWAS)...',
-                t = time.time()
-                df_weights, rse_clf, X, y = gwas_rse(df_features, df_labels,
-                    null_shuffle=False, base_model=base_clf,
-                    rse_kwargs={'n_estimators':n_est, 'max_samples':0.8, 
-                                'max_features':max_feat, 'bootstrap':True, 
-                                'bootstrap_features':False, 'n_jobs':n_jobs,
-                                'random_state':seed},
-                    return_matrices=True)
-                aro_hit_count = df_aro[pd.notnull(df_aro.loc[:,drug])].shape[0]
-                if aro_hit_count == 0: # no reference hits, cannot score based on GWAS
-                    gwas_score = np.nan; gwas_ranks = [np.nan]
-                else: # reference hits available
-                    df_eval = evaluate_gwas(df_weights, df_aro, drug)
-                    gwas_score, gwas_ranks = score_ranking(df_eval)
-                print round3(time.time() - t)
-                
-                ''' Evaluate prediction performance with 5-fold CV '''
-                print '\tTraining 5CV (MCC)...',
-                t = time.time()
-                mcc_scores = sklearn.model_selection.cross_val_score(
-                    rse_clf, X=X, y=y, scoring=mcc_scorer, cv=5)
-                mcc_avg = np.mean(mcc_scores)
-                print round3(time.time() - t) 
-                
-                ''' Report scores '''
-                print '\tGWAS Score:', round3(gwas_score), '\t', map(round3, gwas_ranks)
-                print '\tPred Score:', round3(mcc_avg), '\t', map(round3, mcc_scores)
-                report_values.append((n_est, max_feat, Cparam,  
-                    gwas_score, gwas_ranks, mcc_avg, mcc_scores))
-    df_report = pd.DataFrame(columns=['n_estimators', 'max_features', 'C', 
-                    'GWAS score', 'GWAS ranks', 'MCC avg', 'MCC 5CV'],
-                    data=report_values)
-    return df_report
-                
 
 def score_ranking(df_eval, signed_weights=True):
     '''
@@ -277,7 +229,7 @@ def score_ranking(df_eval, signed_weights=True):
         return gwas_score, min_ranks
     
 
-def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True):
+def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True, block_features=None):
     '''
     Compares the genetic features detected by a statistical method 
     to those detected by sequence homology to known AMR genes (CARD/RGI).
@@ -307,6 +259,10 @@ def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True):
         both res_rank and sus_rank columns. If False, assumes weights are
         strictly positive (as in tree-based classifiers) and produced a 
         single rank column (default True).
+    block_features : list
+        If redundant features were compressed using compress_features(),
+        uses block_features to derive weights for original features.
+        Otherwise, set to None (default None).
         
     Returns
     -------
@@ -323,7 +279,8 @@ def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True):
             gene = feature
         else: # allele or upstream feature
             gene = feature[:last_letter_match.end()-1]
-        return gene, {'C':'gene', 'A':'allele', 'U':'upstream'}[last_letter]
+        return gene, {'C':'gene', 'A':'allele', 'U':'upstream', 'D':'downstream'}[last_letter]  
+            # TODO: reference pangenome.py for feature type abbreviations
     
     ''' Extract alleles and genes relevant to drug '''
     df_drug = df_aro[pd.notnull(df_aro[drug])] if not drug is None else df_aro
@@ -531,7 +488,6 @@ def gwas_rse(df_features, df_labels, null_shuffle=False, base_model=None,
     y : np.ndarray
         Label vector used for training (if return_matrics is True)
     '''
-
     X, y = setup_Xy(df_features, df_labels, null_shuffle)
     
     ''' Set up classifier '''
@@ -585,7 +541,6 @@ def gwas_fisher_exact(df_features, df_labels, null_shuffle=False, report_rate=10
     report_rate : int
         Prints message each time this many features are processed (default 10000)
     '''
-    
     def __batch_contingency__(X, y):
         ''' Creates a 3D table of contingency tables such that
             Table[i] = [[a,b],[c,d]] = contigency table for ith entry
@@ -623,7 +578,24 @@ def gwas_fisher_exact(df_features, df_labels, null_shuffle=False, report_rate=10
     return df_output
 
 
-def compress_features(df_features, feature_block_file=None):
+def expand_block_features(df_weights, block_features):
+    '''
+    Expands a block x column DataFrame to a feature x column DataFrame, 
+    using block_features originally generated by compress_features().
+    '''
+    expanded_values = []; expanded_features = []
+    for b, block in enumerate(df_weights.index):
+        block_index = int(block[1:])
+        block_specific_values = df_weights.values[b,:]
+        block_specific_features = block_features[block_index]
+        expanded_values += [block_specific_values] * len(block_specific_features)
+        expanded_features += block_specific_features
+    df_expanded = pd.DataFrame(index=expanded_features, 
+       columns=df_weights.columns, data=expanded_values)
+    return df_expanded
+    
+
+def compress_features(df_features):
     '''
     Takes a binary feature x sample DataFrame and combines features 
     that occur in the identical set of samples. Yields features named 'B#'.
@@ -638,9 +610,6 @@ def compress_features(df_features, feature_block_file=None):
     ----------
     df_features : pd.DataFrame
         Binary feature x sample DataFrame. Supports SparseArray columns.
-    feature_block_file : str
-        If not None, path to output what features are mapped to 
-        which blocks (default None).
         
     Returns
     -------
@@ -648,17 +617,17 @@ def compress_features(df_features, feature_block_file=None):
         Binary feature block x sample DataFrame with SparseArray columns
     block_features : list
         List of lists with names of features in each block.
-        For example block_features[3] = feature in block "B3"
+        For example block_features[3] = features in block "B3"
     '''
     
     ''' Sort features by occurence in samples '''
     is_sparse = reduce(lambda x,y: x and y, map(lambda x: 'sparse' in x, df_features.ftypes))
     if is_sparse: # sorting rows of sparse matrix
-        spdata = phylo.__sparse_arrays_to_sparse_matrix__(df_features).tolil()
+        spdata = sparse_arrays_to_sparse_matrix(df_features).tolil()
         dfsg = pd.Series(index=df_features.index, data=spdata.rows).sort_values()
         del spdata
-    else: # sorting rows of dense matrix
-        pass # TODO
+    else: # sorting rows of dense matrix: convert to sparse
+        return compress_features(sparsify_dataframe(df_features), feature_block_file)
 
     ''' Combine features into blocks with identical occurence '''
     block_features = [] # maps feature block to related features
@@ -742,7 +711,6 @@ def make_amr_gwas_data_generator(df_features, df_amr, max_imbalance=0.95, min_va
         Yields (drug, df_features, df_phenotype) tuples for each balanced
         drug cases, or (drug, None, df_phenotype) if case is too imbalanced.
     '''
-    
     df_amr_bin, sir_counts = binarize_amr_table(df_amr) if binarize else df_amr
     
     def amr_gwas_generator():
@@ -797,7 +765,6 @@ def binarize_amr_table(df_amr):
         dictionary mapping drug:original SIR:count (for DataFrame)
         
     '''
-    
     def binarize_sir(sir):
         ''' Binarizes a single SIR value '''
         if sir in ['Susceptible', 'Susceptible-dose dependent']:
@@ -834,18 +801,25 @@ def setup_Xy(df_features, df_labels, null_shuffle=False):
     models, and potential need to transpose. 
     '''
     
+    ''' Process feature table '''
+    is_sparse = reduce(lambda x,y: x and y, map(lambda x: 'sparse' in x, df_features.ftypes))
     if type(df_features) == pd.core.frame.DataFrame: # normal DataFrame provided
-        X = df_features.values
+        if is_sparse: # columns are SparseArray
+            X = sparse_arrays_to_sparse_matrix(df_features)
+        else: # fully dense DataFrame 
+            X = df_features.values
     elif type(df_features) == pd.core.sparse.frame.SparseDataFrame: # SparseDataFrame provided
         X = df_features.to_coo() # sparse data structures sometimes faster to train 
     else: # otherwise, assume arrays provided
         X = df_features.copy()
         
+    ''' Process label table  '''
     if type(df_labels) == pd.core.frame.DataFrame: # normal DataFrame provided
         y = df_labels.values
     else: # otherwise, assumes arrays provided
         y = df_labels.copy()
 
+    ''' Check for transposed tables '''
     n = y.shape[0]
     if X.shape[0] != n: # dimension mismatch
         if X.shape[1] == n: # transpose provided
@@ -885,6 +859,53 @@ def filter_nonvariable(df_features, min_variation=2):
     max_count = num_samples - min_variation # inclusive count bounds
     selected_features = df_counts[(df_counts >= min_count) & (df_counts <= max_count)].index
     return df_features.loc[selected_features,:]
+
+
+def sparse_arrays_to_sparse_matrix(dfs):
+    '''
+    Converts a binary DataFrame with SparseArray columns into a
+    scipy.sparse.coo_matrix.
+    '''
+    num_entries = int(dfs.fillna(0).sum().sum())
+    positions = np.empty((2,num_entries), dtype='int')
+    fill_values = np.empty(num_entries)
+    current = 0
+    for i in range(dfs.shape[1]):
+        col_entries = dfs.iloc[:,i].values
+        col_num_entries = col_entries.sp_index.npoints
+        positions[0, current:current+col_num_entries] = col_entries.sp_index.indices
+        positions[1, current:current+col_num_entries] = i
+        fill_values[current:current+col_num_entries] = col_entries.sp_values
+        current += col_num_entries
+    spdata = scipy.sparse.coo_matrix((fill_values, positions), shape=dfs.shape)
+    return spdata
+
+
+def sparsify_dataframe(df_dense):
+    '''
+    Creates a DataFrame with SparseArray columns from a dense DataFrame 
+    '''
+    spdata = {}
+    for col in df_dense.columns:
+        sample = df_dense[col]
+        spdata[col] = pd.SparseArray(sample, fill_value=np.nan)
+    return pd.DataFrame(spdata, index=df_dense.index)
+
+
+def concatenate_sparsearray_dataframes(dfs):
+    '''
+    Concatenates a list of DataFrames with SparseArray columns.
+    Acheives the same results as pd.concat(dfs, axis=0), but
+    retains SparseArray structure rather than reverting to
+    defunct SparseDataFrame. Assumes columns are consistent.
+    '''
+    concat_data = {}
+    concat_index = np.hstack(map(lambda x: x.index.values, dfs))
+    for col in dfs[0].columns:
+        col_values = map(lambda x: x[col].values, dfs)
+        col_values = np.hstack(col_values)
+        concat_data[col] = pd.SparseArray(col_values, fill_value=np.nan)
+    return pd.DataFrame(concat_data, index=concat_index)
 
 
 def get_default_svm(seed=None):
