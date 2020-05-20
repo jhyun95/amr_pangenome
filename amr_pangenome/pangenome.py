@@ -204,7 +204,7 @@ def build_noncoding_pangenome(genome_data, output_dir, name='Test', flanking=(0,
     for i, gff_fna in enumerate(genome_data):
         ''' Prepare output path '''
         genome_gff, genome_fna = gff_fna
-        genome = genome_gff.split('/')[-1][:-4] # trim off path and .gff
+        genome = __get_genome_from_filename__(genome_gff)
         genome_dir = '/'.join(genome_gff.split('/')[:-1]) + '/' if '/' in genome_gff else ''
         genome_nc_dir = genome_dir + 'derived/' # output noncoding sequences here
         if not os.path.exists(genome_nc_dir):
@@ -249,9 +249,11 @@ def build_noncoding_pangenome(genome_data, output_dir, name='Test', flanking=(0,
     # maps original headers to short names <name>_T#A#
     
     ''' Process gene/allele membership into binary tables '''    
-    df_nr_alleles, df_nr_genes = build_genetic_feature_tables(
+    df_nc_alleles, df_nc_genes = build_genetic_feature_tables(
         output_nr_clstr, genome_noncoding_paths, name, 
         cluster_type='noncoding', header_to_allele=header_to_allele)
+    df_nc_alleles.columns = df_nc_alleles.columns.map(lambda x: x.replace('_noncoding',''))
+    df_nc_genes.columns = df_nc_genes.columns.map(lambda x: x.replace('_noncoding','')) 
     
     ''' Save tables as PICKLE.GZ (preserve SparseArrays) and CSV.GZ (backup flat file) '''
     output_allele_table = output_dir + '/' + name + '_strain_by_noncoding_allele'
@@ -263,16 +265,16 @@ def build_noncoding_pangenome(genome_data, output_dir, name='Test', flanking=(0,
     output_allele_pickle = output_allele_table + '.pickle.gz'
     output_gene_pickle = output_gene_table + '.pickle.gz'
     print 'Saving', output_allele_pickle, '...'
-    df_nr_alleles.to_pickle(output_allele_pickle)
+    df_nc_alleles.to_pickle(output_allele_pickle)
     print 'Saving', output_gene_pickle, '...'
-    df_nr_genes.to_pickle(output_gene_pickle)
+    df_nc_genes.to_pickle(output_gene_pickle)
     if save_csv:
         print 'Saving', output_allele_csv, '...'
-        df_nr_alleles.to_csv(output_allele_csv)
+        df_nc_alleles.to_csv(output_allele_csv)
         print 'Saving', output_gene_csv, '...'
-        df_nr_genes.to_csv(output_gene_csv)
+        df_nc_genes.to_csv(output_gene_csv)
     
-    return df_nr_alleles, df_nr_genes
+    return df_nc_alleles, df_nc_genes
     
 
 def consolidate_seqs(genome_paths, nr_out, shared_headers_out, missing_headers_out=None):
@@ -526,8 +528,8 @@ def build_genetic_feature_tables(clstr_file, genome_fasta_paths, name='Test', cl
         shared_header_file, header_to_allele, cluster_type)
                     
     ''' Initialize gene and allele tables '''
-    fasta_to_genome = lambda x: x.split('/')[-1][:-4] # removes folders and .fna/.faa from end
-    genome_order = sorted([fasta_to_genome(x) for x in genome_fasta_paths]) # for genome names, trim .faa from filenames
+    genome_order = sorted([__get_genome_from_filename__(x) for x in genome_fasta_paths]) 
+        # for genome names, trim .faa from filenames
     print 'Sorting alleles...'
     allele_order = sorted(list(set(header_to_allele.values())))
     
@@ -550,7 +552,7 @@ def build_genetic_feature_tables(clstr_file, genome_fasta_paths, name='Test', cl
 
     ''' Scan original genome file for allele and gene membership '''
     for i, genome_fasta in enumerate(sorted(genome_fasta_paths)):
-        genome = fasta_to_genome(genome_fasta)
+        genome = __get_genome_from_filename__(genome_fasta)
         genome_i = genome_order.index(genome)
         allele_arrays[genome] = np.zeros(shape=len(allele_order), dtype='int64')
         gene_arrays[genome] = np.zeros(shape=len(gene_order), dtype='int64')
@@ -745,7 +747,7 @@ def build_proximal_pangenome(genome_data, allele_names, output_dir, limits, side
     for i, gff_fna in enumerate(genome_data):
         ''' Prepare output path '''
         genome_gff, genome_fna = gff_fna
-        genome = genome_gff.split('/')[-1][:-4] # trim off path and .gff
+        genome = __get_genome_from_filename__(genome_gff)
         genome_dir = '/'.join(genome_gff.split('/')[:-1]) + '/' if '/' in genome_gff else ''
         genome_prox_dir = genome_dir + 'derived/'
         if not os.path.exists(genome_prox_dir):
@@ -1209,20 +1211,26 @@ def validate_gene_table_dense(df_genes, df_alleles):
     print 'Gene Table Inconsistencies:', inconsistencies
 
 
-def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa, log_group=1):
+def validate_allele_table(df_alleles, genome_fasta_paths, alleles_fasta, 
+                          cluster_type='cds', log_group=1):
     '''
-    Verifies that the allele x genome table is consistent with the original FAA files.
+    Verifies that the allele x genome table is consistent with the original 
+    fasta files. Works for both CDS and non-coding pan-genomes, when provided the
+    corresponding CDS FAA files or non-coding FNA files.
     
     Parameters
     ----------
     df_alleles : pd.DataFrame or str
-        Either the allele x genome table, or path to the table as CSV or CSV.GZ
-    genome_faa_paths : list
-        Paths to genome FAA files originally combined and clustered
-    alleles_faa : str
+        Either the allele x genome table, or path to the table
+    genome_fasta_paths : list
+        Paths to genome fasta files originally combined and clustered
+    alleles_fasta : str
         Path to non-redundant sequences corresponding to df_alleles
+    cluster_type : str
+        Either 'cds' or 'noncoding' depending on type of validation (default 'cds')
     log_group : int
-        Print message per this many genomes 
+        Print message per this many genomes (default 1)
+    
     '''
     dfa = load_feature_table(df_alleles)
     inconsistencies = 0
@@ -1230,9 +1238,9 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa, log_group=1
     ''' Pre-load hashes for non-redundant protein sequences '''
     print 'Loading non-redundant sequences...'
     seqhash_to_allele = {}
-    with open(alleles_faa, 'r') as f_faa:
+    with open(alleles_fasta, 'r') as f_fasta:
         header = ''; seq_blocks = []
-        for line in f_faa:
+        for line in f_fasta:
             if line[0] == '>': # new sequence encountered
                 if len(seq_blocks) > 0:
                     seqhash = __hash_sequence__(''.join(seq_blocks))
@@ -1247,15 +1255,15 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa, log_group=1
                         
     ''' Validate individual genomes against table '''
     allele_counts = dfa.sum() # genome x total alleles
-    for i, genome_faa in enumerate(sorted(genome_faa_paths)):
+    for i, genome_fasta in enumerate(sorted(genome_fasta_paths)):
         if (i+1) % log_group == 0:
-            print 'Validating genome', i+1, ':', genome_faa
+            print 'Validating genome', i+1, ':', genome_fasta
         
         ''' Load all alleles present in the genome '''
         genome_alleles = set()
-        with open(genome_faa, 'r') as f_faa:
+        with open(genome_fasta, 'r') as f_fasta:
             allele = ''; seq_blocks = []
-            for line in f_faa:
+            for line in f_fasta:
                 if line[0] == '>': # new sequence encountered
                     seq = ''.join(seq_blocks)
                     if len(seq) > 0:
@@ -1276,10 +1284,12 @@ def validate_allele_table(df_alleles, genome_faa_paths, alleles_faa, log_group=1
                 genome_alleles.add(allele)
             
         ''' Check that identified alleles are consistent with the table '''
-        genome = genome_faa.split('/')[-1][:-4]
+        genome = __get_genome_from_filename__(genome_fasta) # trim off full path and .fna/.faa
+        if cluster_type == 'noncoding': # trim off 'noncoding' footer
+            genome = genome.replace('_noncoding', '')
         df_ga = dfa.loc[:,genome]
         table_alleles = set(df_ga.index[pd.notnull(df_ga)]) # alleles from df_alleles
-        test = table_alleles == genome_alleles # alleles from original FAA
+        test = table_alleles == genome_alleles # alleles from original fasta
         inconsistencies += (1 - int(test))
         if not test:
             print genome, table_alleles.symmetric_difference(genome_alleles) 
@@ -1343,7 +1353,7 @@ def validate_proximal_table(df_prox, genome_fna_paths, nr_prox_fna, limits, side
     window = limits[1] - limits[0]
     for g, genome_fna in enumerate(genome_fna_paths):
         genome_contigs = load_sequences_from_fasta(genome_fna)
-        genome = genome_fna.split('/')[-1][:-4]
+        genome = __get_genome_from_filename__(genome_fna)
         if (g+1) % log_group == 0:
             print g+1, 'Evaluating', genome, genome_fna
         dfp_strain = dfp.loc[:,genome]
@@ -1565,7 +1575,7 @@ def breakdown_feature_name(feature_name):
             variant_type = VARIANT_TYPES_REV[footer[i]]
             cluster_num = int(footer[1:i])
             variant_num = int(footer[i+1:])
-            return name, clsuter_type, cluster_num, variant_type, variant_num
+            return name, cluster_type, cluster_num, variant_type, variant_num
     return name, cluster_type, cluster_num, None, None
     
 
@@ -1610,6 +1620,13 @@ def __get_gene_from_allele__(allele):
         <name>_C# gene or <name>_T# transcript. '''
     splitter = VARIANT_TYPES['allele']
     return splitter.join(allele.split(splitter)[:-1])
+
+def __get_genome_from_filename__(filepath):
+    ''' Extracts genome from a filepath by removing the full 
+        path and the extension '''
+    # return filepath.split('/')[-1][:-4] # old version
+    filename = os.path.split(filepath)[1] # remove full path
+    return os.path.splitext(filename)[0] # remove extension
 
 def __get_header_from_fasta_line__(line):
     ''' Extracts a short header from a full header line in a fasta'''
