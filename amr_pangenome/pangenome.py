@@ -1517,7 +1517,8 @@ def validate_proximal_table_direct(df_prox, genome_fna_paths, nr_prox_fna, limit
 
         
 def extract_annotations(genome_gffs, allele_name_file, annotations_out, 
-                        batch=100, collapse_alleles=True):
+                        batch=100, collapse_alleles=True, flexible_locus_tag=False,
+                        allowed_features=None):
     '''
     For a given allele name file (usually <org>_allele_names.tsv),
     extracts the corresponding PATRIC annotations from original gff files.
@@ -1537,6 +1538,15 @@ def extract_annotations(genome_gffs, allele_name_file, annotations_out,
         If True, reports annotations at the gene level, using the most common allele
         annotation. Alleles with non-plurality annotation are reported separately.
         If False, reports all unique annotations for all alleles. (default True)
+    flexible_locus_tag : bool
+        For PATRIC annotations, CDS features map to fig|<ID>|<locus_tag> "3-term" 
+        when tags are available, while RNA features map to fig|<ID> only "2-term". 
+        If flexible_locus_tag is True, then all annotations are mapped to both 3-term
+        and 2-term names when possible for better mapping at the cost of 2x memory use.
+        Otherwise, only one name will be mapped, preferring 3-term names (default False)
+    allowed_features : list or None
+        List of GFF feature types to extract. If None, all feature
+        types are extracted (default None)
     '''
     
     ''' Copy allele name table '''
@@ -1553,15 +1563,23 @@ def extract_annotations(genome_gffs, allele_name_file, annotations_out,
                 for line in f_gff:
                     data = line.strip().split('\t')
                     if len(data) == 9: 
-                        line_annots = data[-1].split(';')
-                        line_annots = dict(map(lambda x: x.split('='), line_annots))
-                        if 'ID' in line_annots and 'product' in line_annots:
-                            product = line_annots['product']
-                            product = urllib.unquote(product) # replace % hex characters
-                            fid = line_annots['ID']
-                            if 'locus_tag' in line_annots:
-                                fid += '|' + line_annots['locus_tag']
-                            annotations[fid] = product
+                        feature_type = data[2]
+                        if allowed_features is None or feature_type in allowed_features:
+                            line_annots = data[-1].split(';')
+                            line_annots = dict(map(lambda x: x.split('='), line_annots))
+                            if 'ID' in line_annots and 'product' in line_annots:
+                                product = line_annots['product']
+                                product = urllib.unquote(product) # replace % hex characters
+                                fid2 = line_annots['ID']; fid3 = None
+                                if 'locus_tag' in line_annots:
+                                    fid3 = fid2 + '|' + line_annots['locus_tag']
+                                if flexible_locus_tag: # save both names when possible
+                                    annotations[fid2] = product
+                                    if not fid3 is None:
+                                        annotations[fid3] = product
+                                else: # save only 3-term, or only 2-term if no locus_tag 
+                                    fid = fid2 if (fid3 is None) else fid3
+                                    annotations[fid] = product
         print 'Loaded', len(annotations), 'annotations from batch', g+1, '-', min(n_gffs,g+batch)
         
         ''' Incorporate newly loaded annotations '''
