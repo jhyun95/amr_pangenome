@@ -1516,6 +1516,58 @@ def validate_proximal_table_direct(df_prox, genome_fna_paths, nr_prox_fna, limit
         print collections.Counter(stop_codons)
 
         
+def generate_annotations(features, annotation_files):
+    '''
+    For a set of features, creates a pd.Series with PATRIC annotations
+    for each feature, or np.nan if no annotation was found.
+    1) For cluster-level features, returns the consensus annotation
+    2) For variant-level features, returns the variant-specific 
+        annotation if recorded as different from consensus. Otherwise,
+        returns the consensus annotation.
+    3) For proximal UTR features, returns the consensus annotation
+        of the parent cluster-level feature.
+        
+    Parameters
+    ----------
+    features : iterable
+        List of features to extract annotations.
+    annotations_files : iterable
+        Paths to files containing annotations, from extract_annotations().
+    '''
+    relevant_features = list(features) + []
+    for feature in features:
+        name, cluster_type, cluster_num, variant_type, variant_num = \
+            breakdown_feature_name(feature)
+        if variant_type: # variant_level feature
+            feature_cluster = name + '_' + cluster_type + str(cluster_num)
+            relevant_features.append(feature_cluster)
+            
+    ''' Load relevant features from annotations file '''
+    relevant_features = set(relevant_features)
+    relevant_annotations = {}
+    for annot_file in annotation_files:
+        with open(annot_file, 'r') as f:
+            for line in f:
+                data = line.strip().split('\t'); feature = data[0]
+                if feature in relevant_features:
+                    relevant_annotations[feature] = ';'.join(data[1:])
+    
+    ''' Process loaded annotations '''
+    feature_to_annot = {}
+    for feature in features:
+        if feature in relevant_annotations: # direct annotation exists
+            feature_to_annot[feature] = relevant_annotations[feature]
+        else: # possible cluster-level annotation exists
+            name, cluster_type, cluster_num, variant_type, variant_num = \
+                breakdown_feature_name(feature)
+            feature_cluster = name + '_' + cluster_type + str(cluster_num)
+            if not variant_type is None and feature_cluster in relevant_annotations: 
+                feature_to_annot[feature] = relevant_annotations[feature_cluster]
+            else: # cluster-level annotation is missing
+                feature_to_annot[feature] = np.nan
+    return pd.Series(feature_to_annot, index=features)
+    
+        
 def extract_annotations(genome_gffs, allele_name_file, annotations_out, 
                         batch=100, collapse_alleles=True, flexible_locus_tag=False,
                         allowed_features=None):
@@ -1704,17 +1756,21 @@ def create_feature_name(name, cluster_type, cluster_num, variant_type=None, vari
 
 def breakdown_feature_name(feature_name):
     '''
-    Reverse function for create_feature_name()
+    Separates a feature name into the name, cluster-type, 
+    cluster-number, variant-type, and variant-number.
+    Example 1: EsC_A123U56 -> ['EsC', 'A', 123, 'U', 56]
+    Example 2: PsA_T789 -> ['PsA', 'T', 89, None, None]
     '''
     data = feature_name.split('_')
     name = '_'.join(data[:-1]); footer = data[-1]
-    cluster_type = CLUSTER_TYPES_REV[footer[0]]
+    cluster_type = footer[0]
     for i in range(1,len(footer)): # identify variant type
-        if footer[i].isalpha():
-            variant_type = VARIANT_TYPES_REV[footer[i]]
+        if footer[i] in VARIANT_TYPES_REV:
+            variant_type = footer[i]
             cluster_num = int(footer[1:i])
             variant_num = int(footer[i+1:])
             return name, cluster_type, cluster_num, variant_type, variant_num
+    cluster_num = int(footer[1:])
     return name, cluster_type, cluster_num, None, None
 
 

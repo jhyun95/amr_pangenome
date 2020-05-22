@@ -21,6 +21,7 @@ import imblearn.ensemble
 import xgboost as xgb
 
 import mlrse
+from pangenome import CLUSTER_TYPES_REV, VARIANT_TYPES_REV
 
 
 def plot_grid_search_performance(df_reports, params, grouping='case', figsize=None):
@@ -130,7 +131,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         df_feat, block_features = compress_features(df_features)
         print 'Compressed features:', df_feat.shape
     else: # otherwise use original features directly
-        df_feat = df_features; block_features = None
+        df_feat = df_features
         
     report_values = []
     param_columns = list(parameter_sweep.keys())
@@ -162,7 +163,7 @@ def grid_search_svm_rse(df_features, df_labels, df_aro, drug,
         if aro_hit_count == 0: # no reference hits, cannot score based on GWAS
             gwas_score = np.nan; gwas_ranks = [np.nan]
         else: # reference hits available
-            df_eval = evaluate_gwas(df_weights, df_aro, drug, signed_weights=True, block_features=block_features)
+            df_eval = evaluate_gwas(df_weights, df_aro, drug, signed_weights=True)
             gwas_score, gwas_ranks = score_ranking(df_eval, signed_weights=True)
         time_gwas = time.time() - t
         print round3(time_gwas)
@@ -229,7 +230,7 @@ def score_ranking(df_eval, signed_weights=True):
         return gwas_score, min_ranks
     
 
-def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True, block_features=None):
+def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True):
     '''
     Compares the genetic features detected by a statistical method 
     to those detected by sequence homology to known AMR genes (CARD/RGI).
@@ -259,10 +260,6 @@ def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True, block_features=
         both res_rank and sus_rank columns. If False, assumes weights are
         strictly positive (as in tree-based classifiers) and produced a 
         single rank column (default True).
-    block_features : list
-        If redundant features were compressed using compress_features(),
-        uses block_features to derive weights for original features.
-        Otherwise, set to None (default None).
         
     Returns
     -------
@@ -272,15 +269,26 @@ def evaluate_gwas(df_weights, df_aro, drug, signed_weights=True, block_features=
     '''
     
     def feature_to_gene(feature):
-        ''' Returns the gene and feature type (C, A, or U) of a genetic feature '''
-        last_letter_match = list(re.finditer(r'[A-Z]', feature, re.I))[-1]
-        last_letter = last_letter_match.group()
-        if last_letter == 'C': # cluster/gene feature
-            gene = feature
-        else: # allele or upstream feature
-            gene = feature[:last_letter_match.end()-1]
-        return gene, {'C':'gene', 'A':'allele', 'U':'upstream', 'D':'downstream'}[last_letter]  
-            # TODO: reference pangenome.py for feature type abbreviations
+        ''' Returns the parent feature and type of a genetic feature '''
+        name, footer = feature.split('_')
+        parent = None; variant_type = None; cluster_type = ''
+        for i,c in enumerate(footer):
+            if c in CLUSTER_TYPES_REV:
+                cluster_type = CLUSTER_TYPES_REV[c]
+            elif c in VARIANT_TYPES_REV:
+                variant_type = VARIANT_TYPES_REV[c]
+                parent = name + '_' + footer[:i]
+        feature_type = cluster_type if variant_type is None else cluster_type + '-' + variant_type
+        parent = feature if variant_type is None else parent
+        return parent, feature_type
+        # last_letter_match = list(re.finditer(r'[A-Z]', feature, re.I))[-1]
+        # last_letter = last_letter_match.group()
+        # if last_letter == 'C': # cluster/gene feature
+        #     gene = feature
+        # else: # allele or upstream feature
+        #     gene = feature[:last_letter_match.end()-1]
+        # return gene, {'C':'gene', 'A':'allele', 'U':'upstream', 'D':'downstream'}[last_letter]  
+        #     # TODO: reference pangenome.py for feature type abbreviations
     
     ''' Extract alleles and genes relevant to drug '''
     df_drug = df_aro[pd.notnull(df_aro[drug])] if not drug is None else df_aro
@@ -728,10 +736,7 @@ def make_amr_gwas_data_generator(df_features, df_amr, max_imbalance=0.95, min_va
             ''' Optionally, check if drug is of interest '''
             is_relevant_drug = (drugs is None) or (drug in drugs)
             
-            if is_imbalanced or not is_relevant_drug:
-                ''' Do not process features for imbalanced cases or irrelevant cases '''
-                yield (drug, None, df_phenotype)
-            else:
+            if (not is_imbalanced) and is_relevant_drug:
                 ''' Filter out features missing in the drug-specific dataset,
                     then features with low variability '''
                 df_drug_features = df_features.loc[:,relevant_genomes]
