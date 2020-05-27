@@ -17,9 +17,19 @@ import networkx as nx
 
 from pangenome import generate_annotations, breakdown_feature_name
 
+# Manually selected AROs corresponding to drug classes and superclasses
+DRUG_CLASS_AROS = [
+    'ARO:3000007', 'ARO:3000008', 'ARO:0000004', # beta-lactam, penam, monobactam 
+    'ARO:0000032', 'ARO:0000020', 'ARO:0000016', # cephalosporin, carbapenem, aminoglycoside
+    'ARO:0000001', 'ARO:0000017', 'ARO:0000000', # fluoroquinolone, lincosamide, macrolide
+    'ARO:3000387', 'ARO:3004116', 'ARO:3000050', # phenicol, nitrofuran, tetracycline
+    'ARO:0000042', 'ARO:3000171', 'ARO:3000282', # glycylcycline, diaminopyrimidine, sulfonamide
+    'ARO:3000081'                                # glycopeptide
+]
 
 def generate_probable_hits_from_annotations(df_aro, annotations_file,
-                                            exclude=['hypothetical protein']):
+        exclude=['hypothetical protein'], check_drug_mentions=True, 
+        G_aro=None, aro_names={}):
     '''
     Attempts to identify probable AMR-associated features by identifying
     features with identical generic annotations to features flagged by CARD/RGI.
@@ -32,6 +42,17 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
         Path to gene/allele annotations, see pangenome.generate_annotations()
     exclude : list
         List of annotations to ignore (default ['hypothetical protein'])
+    check_drug_mentions : bool
+        If True, includes features in which the annotation directly 
+        mentions the drug (or its drug class if G_aro is not None), in
+        addition to similarity to CARD hit (default True)
+    G_aro : nx.DiGraph
+        ARO graph from construct_aro_to_drug_network(). If not None and 
+        check_drug_mentions is True, will also try to find probable features 
+        based on mentions of drug class. Limited to DRUG_CLASS_AROS (default None)
+    aro_names : dict
+        AROs-annotations map, from construct_aro_to_drug_network(). Used only
+        if check_drug_mentions is True and G_aro is provided (default {})
         
     Returns
     -------
@@ -49,12 +70,13 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
     df_aro_all['annot'] = df_aro_annot.values
     
     ''' Map generic annotations of CARD hits to drugs and features '''
+    drugs_of_interest = df_aro_all.columns[1:-1]
     annot_to_amr = {} # maps annotations:drug:(feature, ARO pairs)
     for data in df_aro_all.itertuples(name=None):
         card_feature = data[0]; aro = data[1]; annot = data[-1]
         drug_binary = data[2:-1] # 1s or NaNs for drug relevance
         drug_indices = np.argwhere(~np.isnan(drug_binary)).T[0]
-        drugs = df_aro_all.columns[drug_indices + 1] # +1 skip ARO column
+        drugs = drugs_of_interest[drug_indices] # +1 skip ARO column
         if len(drugs) > 0:
             if not annot in annot_to_amr:
                 annot_to_amr[annot] = {drug:[[],[]] for drug in drugs}
@@ -72,20 +94,51 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
             annot_to_amr[annot][drug] = (alleles, unique_aros) # annotation:drug:(card-hit alleles, unique AROs)
     
     ''' Get annotation-matched hits for each drug '''
+    term_to_aro = {v:k for k,v in aro_names.items()}
     excluded_annots = set(exclude)
     probable_amr = {}
+    
+    ''' Optionally checking for related terms '''
+    search_terms = {}
+    for drug in drugs_of_interest: # check annotation against all drugs of interest
+        search_terms[drug] = [drug]
+        if '/' in drug: # combination therapy, check for individual drugs
+            search_terms[drug] += drug.split('/')
+        if not G_aro is None: # check drug class level terms if possible
+            class_terms = []
+            for drug_class_aro in DRUG_CLASS_AROS: # check drug against curated drug classes
+                for subdrug in search_terms[drug]: # just [drug] for monotherapies, individual drugs for combination
+                    if subdrug in term_to_aro: 
+                        drug_aro = term_to_aro[subdrug]
+                        if nx.has_path(G_aro, drug_class_aro, drug_aro):
+                            drug_class = aro_names[drug_class_aro]
+                            drug_class = drug_class.replace('antibiotic','').strip() # reduce to just name
+                            class_terms.append(drug_class)
+            search_terms[drug] += class_terms
+    search_terms = {k:set(v) for k,v in search_terms.items()} # remove redundancies
+    
+    ''' Screen annotations from shared or relevant terms '''
     with open(annotations_file) as f:
         for line in f:
             data = line.strip().split('\t')
             feature = data[0]; annots = data[1:]
             annots = filter(lambda x: not x in excluded_annots, annots)
             for annot in annots:
-                if annot in annot_to_amr:
-                    for drug in annot_to_amr[annot]:
+                if annot in annot_to_amr: # checking identical annotations to CARD hits
+                    for drug in annot_to_amr[annot]: 
                         probable_amr[feature] = {
                             'drug': drug, 'shared_annot': annot,
                             'card_hits': annot_to_amr[annot][drug][0],
                             'related_aros': annot_to_amr[annot][drug][1]}
+                elif check_drug_mentions: # checking annotation for drug mentions
+                    annot_lower = annot.lower() # remove case information
+                    for drug in drugs_of_interest:
+                        for search_term in search_terms[drug]:
+                            if search_term in annot_lower: 
+                                probable_amr[feature] = {
+                                    'drug': drug, 'shared_annot': annot,
+                                    'card_hits': np.nan, 'related_aros': search_term}
+                                break
     df_prob = pd.DataFrame.from_dict(probable_amr, orient='index')
                         
     ''' Check for shared gene clusters '''
@@ -94,11 +147,12 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
         name, ctype, cnum, vtype, vnum = breakdown_feature_name(probable_feature)
         probable_cluster = name + '_' + ctype + str(cnum)
         is_shared = False
-        for hit in related_hits.split(';'):
-            name, ctype, cnum, vtype, vnum = breakdown_feature_name(hit)
-            related_cluster = name + '_' + ctype + str(cnum)
-            if related_cluster == probable_cluster:
-                is_shared = True; break
+        if pd.notnull(related_hits): # hit from similarity to CARD hit
+            for hit in related_hits.split(';'):
+                name, ctype, cnum, vtype, vnum = breakdown_feature_name(hit)
+                related_cluster = name + '_' + ctype + str(cnum)
+                if related_cluster == probable_cluster:
+                    is_shared = True; break
         shared_gene.append(is_shared)
     df_prob['shared_gene'] = shared_gene
     df_prob.sort_values(by='drug', inplace=True)
