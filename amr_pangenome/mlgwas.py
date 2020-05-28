@@ -41,6 +41,7 @@ def generate_feature_report(df_weights, df_features=None, df_amr=None,
     6) LOR: Weighted LORs for resistance (if df_feature and df_amr are provided)
     7) annot: Cluster-level annotation (if annotation_files is provided)
     8) known: True if feature was annotated by CARD (if df_eval is provided)
+    9) ARO: ARO of known hit (if df_eval is provided)
     
     Parameters
     ----------
@@ -99,6 +100,7 @@ def generate_feature_report(df_weights, df_features=None, df_amr=None,
     ''' Check for CARD/RGI annotations '''
     if not (df_eval is None):
         df_report['known'] = df_report.index.map(lambda x: x in df_eval.index)
+        df_report['ARO'] = df_eval.ARO.reindex(df_report.index).values
     
     ''' Generate cluster-level annotations '''
     if not (annotation_files is None):

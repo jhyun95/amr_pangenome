@@ -26,6 +26,56 @@ DRUG_CLASS_AROS = [
     'ARO:0000042', 'ARO:3000171', 'ARO:3000282', # glycylcycline, diaminopyrimidine, sulfonamide
     'ARO:3000081'                                # glycopeptide
 ]
+EXTRA_DRUG_SEARCH_TERMS = {'fluoroquinolone':['quinolone']} # additional curated search terms 
+
+
+def add_probable_hits(df_aro, df_prob, organism, print_additions=False):
+    '''
+    Combines CARD hits from build_resistome(), with extra
+    hits from generate_probable_hits_from_annotations(). 
+    df_prob should not be used directly, but should be manually
+    curated before combining with actual CARD hits.
+    
+    Parameters
+    ----------
+    df_aro : pd.DataFrame
+        CARD hits from build_resistome(). Assumes first column
+        has AROs and all following columns are drug relevance.
+    df_prob : pd.DataFrame
+        Probable AMR hits from generate_probable_hits_from_annotations().
+        Will be filtered down by organism and drugs in df_aro.
+    organism : str
+        Organism to filter for. Should match "org" column values in df_prob. 
+    print_additions : bool
+        If True, prints annotations of added probable hits (default False)
+        
+    Returns
+    -------
+    df_aro_ext : pd.DataFrame
+        Contains CARD + probable hits, while maintaining the format
+        of df_aro. For probable hits matched to CARD hits, ARO column
+        has the ARO(s) of the matched hit(s) preceded by an asterisk.
+        For probable hits inferred directly from annotation, ARO column
+        has "Inferred".
+    '''
+    drugs_of_interest = df_aro.columns[1:]
+    dfp = df_prob[df_prob.org == organism] # filter down to relevant organism
+    dfp = dfp[dfp.drug.map(lambda x: x in drugs_of_interest)] # filter down to relevant drugs
+    
+    df_aro_ext = df_aro.copy(deep=True)
+    for row in dfp.itertuples(name=None):
+        feature, card_features, annot, drug, related_aros, _, org = row
+        if (';' in related_aros) or (not related_aros.isalpha()): # matched multiple or single ARO
+            aro_label = '*' + related_aros
+        else: # did not match CARD hit, inferred from annotation
+            aro_label = 'Inferred'
+        if print_additions:
+            print feature, annot 
+        new_features = {feature: {'ARO': aro_label, drug: 1.0}}
+        df_new = pd.DataFrame.from_dict(new_features, orient='index')
+        df_aro_ext = df_aro_ext.append(df_new.reindex(df_aro.columns, axis=1))
+    return df_aro_ext
+        
 
 def generate_probable_hits_from_annotations(df_aro, annotations_file,
         exclude=['hypothetical protein'], check_drug_mentions=True, 
@@ -115,7 +165,14 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
                             drug_class = drug_class.replace('antibiotic','').strip() # reduce to just name
                             class_terms.append(drug_class)
             search_terms[drug] += class_terms
+            
+        # check for extra manually curated terms to add
+        for search_term in list(search_terms[drug]):
+            if search_term in EXTRA_DRUG_SEARCH_TERMS:
+                search_terms[drug] += EXTRA_DRUG_SEARCH_TERMS[search_term]
+                
     search_terms = {k:set(v) for k,v in search_terms.items()} # remove redundancies
+    print search_terms
     
     ''' Screen annotations from shared or relevant terms '''
     with open(annotations_file) as f:
