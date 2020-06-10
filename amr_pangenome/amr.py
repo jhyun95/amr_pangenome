@@ -61,16 +61,21 @@ def add_probable_hits(df_aro, df_prob, organism, print_additions=False):
     drugs_of_interest = df_aro.columns[1:]
     dfp = df_prob[df_prob.org == organism] # filter down to relevant organism
     dfp = dfp[dfp.drug.map(lambda x: x in drugs_of_interest)] # filter down to relevant drugs
+    col_order = df_prob.columns.tolist()
+    aro_pos = col_order.index('related_aros')
+    drug_pos = col_order.index('drug')
+    annot_pos = col_order.index('shared_annot')
     
     df_aro_ext = df_aro.copy(deep=True)
     for row in dfp.itertuples(name=None):
-        feature, card_features, annot, drug, related_aros, _, org = row
-        if (';' in related_aros) or (not related_aros.isalpha()): # matched multiple or single ARO
+        feature = row[1]; drug = row[drug_pos+1]
+        related_aros = str(row[aro_pos+1]); annot = row[annot_pos+1] 
+        if (';' in related_aros) or (unicode(related_aros).isnumeric()): # matched multiple or single ARO
             aro_label = '*' + related_aros
         else: # did not match CARD hit, inferred from annotation
             aro_label = 'Inferred'
         if print_additions:
-            print feature, annot 
+            print feature, drug, annot 
         new_features = {feature: {'ARO': aro_label, drug: 1.0}}
         df_new = pd.DataFrame.from_dict(new_features, orient='index')
         df_aro_ext = df_aro_ext.append(df_new.reindex(df_aro.columns, axis=1))
@@ -175,6 +180,8 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
     print search_terms
     
     ''' Screen annotations from shared or relevant terms '''
+    columns = ('feature', 'drug', 'shared_annot', 'card_hits', 'related_aros')
+    selected_features = []
     with open(annotations_file) as f:
         for line in f:
             data = line.strip().split('\t')
@@ -183,24 +190,24 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
             for annot in annots:
                 if annot in annot_to_amr: # checking identical annotations to CARD hits
                     for drug in annot_to_amr[annot]: 
-                        probable_amr[feature] = {
-                            'drug': drug, 'shared_annot': annot,
-                            'card_hits': annot_to_amr[annot][drug][0],
-                            'related_aros': annot_to_amr[annot][drug][1]}
-                elif check_drug_mentions: # checking annotation for drug mentions
+                        card_hits = annot_to_amr[annot][drug][0]
+                        related_aros = annot_to_amr[annot][drug][1]
+                        selected_features.append( (feature, drug, annot, card_hits, related_aros) )
+                if check_drug_mentions: # checking annotation for drug mentions
                     annot_lower = annot.lower() # remove case information
                     for drug in drugs_of_interest:
                         for search_term in search_terms[drug]:
                             if search_term in annot_lower: 
-                                probable_amr[feature] = {
-                                    'drug': drug, 'shared_annot': annot,
-                                    'card_hits': np.nan, 'related_aros': search_term}
+                                card_hits = np.nan
+                                related_aros = search_term
+                                selected_features.append( (feature, drug, annot, card_hits, related_aros) )                                
                                 break
-    df_prob = pd.DataFrame.from_dict(probable_amr, orient='index')
+    df_prob = pd.DataFrame(columns=columns, data=selected_features)
                         
     ''' Check for shared gene clusters '''
     shared_gene = []
-    for probable_feature, related_hits in df_prob.card_hits.items():
+    for row in df_prob.itertuples(name=None):
+        probable_feature = row[1]; related_hits = row[4]
         name, ctype, cnum, vtype, vnum = breakdown_feature_name(probable_feature)
         probable_cluster = name + '_' + ctype + str(cnum)
         is_shared = False
