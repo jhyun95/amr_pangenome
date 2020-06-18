@@ -26,7 +26,6 @@ DRUG_CLASS_AROS = [
     'ARO:0000042', 'ARO:3000171', 'ARO:3000282', # glycylcycline, diaminopyrimidine, sulfonamide
     'ARO:3000081'                                # glycopeptide
 ]
-EXTRA_DRUG_SEARCH_TERMS = {'fluoroquinolone':['quinolone']} # additional curated search terms 
 
 
 def add_probable_hits(df_aro, df_prob, organism, print_additions=False):
@@ -84,10 +83,12 @@ def add_probable_hits(df_aro, df_prob, organism, print_additions=False):
 
 def generate_probable_hits_from_annotations(df_aro, annotations_file,
         exclude=['hypothetical protein'], check_drug_mentions=True, 
-        G_aro=None, aro_names={}):
+        G_aro=None, aro_names={}, manual_annots={}, ignore_case=True):
     '''
     Attempts to identify probable AMR-associated features by identifying
-    features with identical generic annotations to features flagged by CARD/RGI.
+    features with identical generic annotations to features flagged by CARD/RGI, 
+    or those containing related drug keywords from the CARD ontology or from 
+    manual curation.
     
     Parameters
     ----------
@@ -108,6 +109,11 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
     aro_names : dict
         AROs-annotations map, from construct_aro_to_drug_network(). Used only
         if check_drug_mentions is True and G_aro is provided (default {})
+    manual_annots : dict
+        Exact phrases in annotations to look for in specific drugs or drug classes, 
+        provided as {drug : [iterable of exact phrases}. Default {}.
+    ignore_case : bool
+        If True, ignores the case when matching annotations (default True)
         
     Returns
     -------
@@ -155,27 +161,29 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
     
     ''' Optionally checking for related terms '''
     search_terms = {}
-    for drug in drugs_of_interest: # check annotation against all drugs of interest
-        search_terms[drug] = [drug]
-        if '/' in drug: # combination therapy, check for individual drugs
-            search_terms[drug] += drug.split('/')
-        if not G_aro is None: # check drug class level terms if possible
-            class_terms = []
-            for drug_class_aro in DRUG_CLASS_AROS: # check drug against curated drug classes
-                for subdrug in search_terms[drug]: # just [drug] for monotherapies, individual drugs for combination
-                    if subdrug in term_to_aro: 
-                        drug_aro = term_to_aro[subdrug]
-                        if nx.has_path(G_aro, drug_class_aro, drug_aro):
-                            drug_class = aro_names[drug_class_aro]
-                            drug_class = drug_class.replace('antibiotic','').strip() # reduce to just name
-                            class_terms.append(drug_class)
-            search_terms[drug] += class_terms
-            
-        # check for extra manually curated terms to add
-        for search_term in list(search_terms[drug]):
-            if search_term in EXTRA_DRUG_SEARCH_TERMS:
-                search_terms[drug] += EXTRA_DRUG_SEARCH_TERMS[search_term]
+    if check_drug_mentions: # checking annotation for drug mentions
+        for drug in drugs_of_interest: # check annotation against all drugs of interest
+            search_terms[drug] = [drug] # check mentions of exact drug name
+            if '/' in drug: # combination therapy, check for individual drugs
+                search_terms[drug] += drug.split('/')
+            if not G_aro is None: # check drug class level terms if possible
+                class_terms = []
+                for drug_class_aro in DRUG_CLASS_AROS: # check drug against curated drug classes
+                    for subdrug in search_terms[drug]: # just [drug] for monotherapies, individual drugs for combination
+                        if subdrug in term_to_aro: 
+                            drug_aro = term_to_aro[subdrug]
+                            if nx.has_path(G_aro, drug_class_aro, drug_aro):
+                                drug_class = aro_names[drug_class_aro]
+                                drug_class = drug_class.replace('antibiotic','').strip() # reduce to just name
+                                class_terms.append(drug_class)
+                search_terms[drug] += class_terms
                 
+    ''' Adding manually curated terms '''
+    for drug in filter(lambda x: x in drugs_of_interest, manual_annots.keys()):
+        if not drug in search_terms:
+            search_terms[drug] = manual_annots[drug]
+        else:
+            search_terms[drug] += list(manual_annots[drug]) 
     search_terms = {k:set(v) for k,v in search_terms.items()} # remove redundancies
     print search_terms
     
@@ -188,16 +196,17 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
             feature = data[0]; annots = data[1:]
             annots = filter(lambda x: not x in excluded_annots, annots)
             for annot in annots:
+                annot_lower = annot.lower()
                 if annot in annot_to_amr: # checking identical annotations to CARD hits
                     for drug in annot_to_amr[annot]: 
                         card_hits = annot_to_amr[annot][drug][0]
                         related_aros = annot_to_amr[annot][drug][1]
                         selected_features.append( (feature, drug, annot, card_hits, related_aros) )
-                if check_drug_mentions: # checking annotation for drug mentions
-                    annot_lower = annot.lower() # remove case information
-                    for drug in drugs_of_interest:
+                for drug in drugs_of_interest: # checking keywords derived from CARD ontology and/or manual curation
+                    if drug in search_terms:
                         for search_term in search_terms[drug]:
-                            if search_term in annot_lower: 
+                            found = (search_term.lower() in annot_lower) if ignore_case else (search_term in annot)
+                            if search_term in annot or search_term.lower() in annot_lower: 
                                 card_hits = np.nan
                                 related_aros = search_term
                                 selected_features.append( (feature, drug, annot, card_hits, related_aros) )                                
