@@ -6,14 +6,140 @@ Created on Wed May 6 16:35:52 2020
 @author: jhyun95
 """
 
+import collections
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import scipy.sparse
+import scipy.sparse, scipy.optimize
 import scipy.cluster.hierarchy as sch
 
 from mlgwas import sparse_arrays_to_sparse_matrix
 
+def get_allele_count(features, parent_abb='C', allele_abb='A', verify_features=False):
+    '''
+    Computes the number of alleles per parent feature (i.e. number of
+    unique alleles per CDS gene cluster).
+    
+    Parameters
+    ----------
+    features : iterable
+        List of feature names at the allele level
+    parent_abb : str
+        Abbreviation of parent feature. 'C' for CDS/genes, or
+        'T' for transcripts/non-coding features (default 'C').
+    allele_abb : str
+        Abbreviation of allele feature. 'A' for alleles, 'U' for 
+        upstream variants, or 'D' for downstream variants (default 'A')
+    verify_features : bool
+        If True, checks that features are of the type specified and filters 
+        out irrelevant features. Otherwise, assumes all features are the
+        correct type (default False)
+        
+    Returns
+    -------
+    allele_counts : dict
+        Dictionary mapping parent features to allele counts
+    '''
+    if verify_features:
+        feature_footers = map(lambda x: x.split('_')[-1], features)
+        relevant_features = filter(lambda x: x[0] == parent_abb and allele_abb in x, feature_footers)
+    else:
+        relevant_features = features
+    parent_features = map(lambda x: x[:x.rindex(allele_abb)], relevant_features)
+    return dict(collections.Counter(parent_features))
+
+
+def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
+    '''
+    Computes the gene frequency thresholds at which a gene can be categorized as 
+    core, accessory, or unique. Specifically, fits a three-parameter logistic 
+    function for cumulative genes vs. max strains with gene (gene frequency),
+    identifies the inflection point, and identifies the core and unique extremes
+    relative to the inflection point and threshold. See link for details,
+    where parameters (B,v,M) are fit.
+    
+    https://en.wikipedia.org/wiki/Generalised_logistic_function
+    
+    Example at 10%:
+    - N = total strains, R = computed inflection point
+    - Core: Observed in >= R + (1 - 0.1) * (N-R) strains
+    - Unique: Observed in <= 0.1 * R strains
+    - Accessory: Everything in between
+    
+    Parameters
+    ----------
+    df_genes : pd.DataFrame
+        Binary gene x strain table.
+    threshold : float
+        Proximity to each frequency extreme compared to inflection point
+        that determines if a gene is core, unique, or accessory (default 0.1)
+    ax : plt.axes
+        If provided, pangenome frequency plot with segments (default None)
+        
+    Returns
+    -------
+    segments : tuple
+        2-tuple with (min core limit, max unique limit), not rounded.
+    popt : tuple
+        3-tuple with fitted logistic parameters. These parameters are 
+        fit after scaling the x and y to the range 0-1.
+    ax : plt.axes
+        If ax is not None, returns axis with plots.
+    '''
+    
+    ''' Computing gene frequencies and frequency counts '''
+    df_gene_freq = df_genes.fillna(0).sum(axis=1)
+    df_freq_counts = df_gene_freq.value_counts()
+    df_freq_counts = df_freq_counts[sorted(df_freq_counts.index)]
+    cumulative_frequencies = np.cumsum(df_freq_counts.values)
+    frequency_bins = df_freq_counts.index
+
+    ''' Fitting 3-parameter logistic '''
+    def generalized_logistic(t,B,v,M):
+    #     return A + (K-A) * np.power(1.0+np.exp(-B*(t-M)), -1.0/v) # 5-parameter form
+        return np.power(1.0+np.exp(-B*(t-M)), -1.0/v) # 3-parameter form
+
+    X = cumulative_frequencies.astype(float)
+    Y = frequency_bins.values.astype(float)
+    Xscaled = (X - np.min(X)) / (np.max(X) - np.min(X))
+    Yscaled = (Y - np.min(Y)) / (np.max(Y) - np.min(Y))
+    p0 = [1.0, 1.0, 1.0]
+    popt, pcov = scipy.optimize.curve_fit(generalized_logistic, Xscaled, Yscaled, p0)
+    B,v,M = popt
+    Yfit = np.array(map(lambda x: generalized_logistic(x, *popt), Xscaled))
+    Yfit = Yfit * (np.max(Y) - np.min(Y)) + np.min(Y)
+    
+    ''' Segmenting into core/accessory/unique '''
+    threshold = 0.1
+    inflection_scaled_x = M - np.log(v) / B
+    inflection_scaled_y = generalized_logistic(inflection_scaled_x, *popt)
+    inflection_genes = inflection_scaled_x * (np.max(X) - np.min(X)) + np.min(X)
+    inflection_strains = inflection_scaled_y * (np.max(Y) - np.min(Y)) + np.min(Y)
+    unique_strains_max = inflection_strains * threshold
+    core_strains_min = inflection_strains + (Y[-1] - inflection_strains) * (1.0 - threshold)
+    segments = (core_strains_min, unique_strains_max)
+
+    ''' Optionally, generating plot '''
+    if ax:
+        yscale = np.max(Y)
+        ax.plot(cumulative_frequencies, frequency_bins, label='observed')
+        ax.plot(X, Yfit, label='fit', ls='--')
+        ax.axhline(unique_strains_max, ls='--', color='k')
+        ax.axhline(core_strains_min, ls='--', color='k')
+        unique_rounded = int(unique_strains_max) + 1
+        core_rounded = int(core_strains_min)
+        unique_text = 'U: <' + str(unique_rounded)
+        core_text = 'C: >' + str(core_rounded)
+        accessory_text = 'A: '  + str(unique_rounded) + '-' + str(core_rounded)
+        ax.text(X[0], unique_strains_max + yscale*0.02, unique_text, ha='left', va='bottom')
+        ax.text(X[0], core_strains_min - yscale*0.02, core_text, ha='left', va='top')
+        ax.text(X[0], (unique_strains_max + core_strains_min) * 0.5, accessory_text, ha='left', va='center')
+        ax.set_xlabel('Cumulative genes')
+        ax.set_ylabel('Max strains with gene')
+        return segments, popt, ax
+    else:
+        return segments, pot
+    
 
 def fit_heaps_law(df_pan_core, drop_early=0, figsize=(8,4)):
     '''
@@ -52,12 +178,10 @@ def fit_heaps_law(df_pan_core, drop_early=0, figsize=(8,4)):
     ''' Select points to fit '''
     new_gene_rates = median_pan_genome[1:] - median_pan_genome[:-1] 
     new_gene_rates = np.insert(new_gene_rates, 0, median_pan_genome[0])
-    end_limit = num_strains
-    while new_gene_rates[end_limit-1] == 0: # trim cases where 0 new genes/strain are added to avoid NGR=0
-        end_limit -= 1
-    included_strain_counts = range(drop_early+1, end_limit+1)
-    included_gene_rates = new_gene_rates[drop_early:end_limit]
-    
+    included_strain_counts = range(drop_early, num_strains)
+    included_strain_counts = filter(lambda x: not new_gene_rates[x] == 0, included_strain_counts)
+    included_gene_rates = new_gene_rates[included_strain_counts]
+
     ''' Fit Heaps' Law to selected points '''
     heaps_law = lambda N, k, a: k * np.power(N,-a) # y = k*N^-a; log(y) = log(k) - a*log(N)
     x = np.log(included_strain_counts) # log strain counts, or log(N)
