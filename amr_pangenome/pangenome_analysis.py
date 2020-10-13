@@ -10,10 +10,194 @@ import collections
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import scipy.sparse, scipy.optimize
+import scipy.sparse, scipy.optimize, scipy.stats
 import scipy.cluster.hierarchy as sch
 
 from mlgwas import sparse_arrays_to_sparse_matrix
+
+def test_segment_enrichment(df_annot_counts, min_freq=10, 
+        total_gene_counts='TOTAL', lor_only=False):
+    '''
+    Tests whether the core, accessory, or unique genome is enriched for 
+    a particular functional annotation (i.e. COG, GO term). 
+    
+    Parameters
+    ----------
+    df_annot_counts : pd.DataFrame
+        Annotation x segment (core, accessory, unique) count table.
+        See count_segment_cog() and coutn_segment_go() output for format.
+    min_freq : int
+        Excludes annotations with total frequency < min_freq (default 10)
+    total_gene_counts : str or tuple
+        Total number of genes in the core, accessory, unique gene sets 
+        If str, uses the row with this value as the label. If 3-tuple, uses
+        counts from in the order of the columns in df_annot_counts (default 'TOTAL')
+    lor_only : bool
+        If True, computes LORs only. Much faster than computing Fisher's Exact
+        test p-values, especially for many annotations as in GO terms (default False)
+        
+    Returns
+    -------
+    df_lors : pd.DataFrame
+        Log2 odds ratio between each segment and functional annotation.
+        Uses weighted pseudocounts as in doi:10.1371/journal.pcbi.1007608
+    df_pvals : pd.DataFrame
+        Raw p-values from Fisher's exact tests.
+    '''
+    
+    ''' Filter out rare mutations based on min_freq '''
+    annot_counts = df_annot_counts.sum(axis=1)
+    df_annot = df_annot_counts[annot_counts >= min_freq]
+    
+    ''' Get total core, accessory, unique, and overall genes '''
+    if type(total_gene_counts) == str:
+        segment_gene_counts = df_annot.loc[total_gene_counts,:].values
+        df_annot = df_annot.drop(index=total_gene_counts)
+    else:
+        segment_gene_counts = total_gene_counts
+    total_genes = np.sum(segment_gene_counts)
+    
+    ''' Compute LOR and apply association tests per annotation '''
+    lors = np.zeros(df_annot.shape)
+    pvals = np.zeros(df_annot.shape)
+    
+    for s,segment in enumerate(df_annot.columns):
+        ''' Construct contingency tables '''
+        segment_gene_count = segment_gene_counts[s]
+        tps = df_annot.loc[:,segment].values #  TPs: in annot, in segment
+        fps = df_annot.sum(axis=1) - tps # FPs: in annot, out segment
+        fns = segment_gene_count - tps # FNs: out annot, in segment
+        tns = total_genes - segment_gene_count - fps # TNs: out annot, out segment
+        
+        ''' Compute LORs and apply Fisher's exact tests '''
+        lors[:,s] = adjusted_lor(tps, fps, fns, tns)
+        if not lor_only: # TODO: Faster/vectorized Fisher's exact tests?
+            for a in np.arange(len(tps)):
+                oddsratio, pvalue = scipy.stats.fisher_exact([[tps[a],fps[a]],[fns[a],tns[a]]])
+                pvals[a,s] = pvalue
+
+    ''' Format output '''
+    df_lors = pd.DataFrame(index=df_annot.index, columns=df_annot.columns, data=lors)
+    if lor_only:
+        return df_lors
+    else:
+        df_pvals = pd.DataFrame(index=df_annot.index, columns=df_annot.columns, data=pvals)
+        return df_lors, df_pvals
+    
+
+def count_segment_cog(df_genes, df_eggnog, core_min, unique_max, include_totals=True):
+    ''' 
+    Count the number of core, accessory, and unique genes per COG.
+    Genes with multiple COG annotations are counted into all related
+    COG categories. Genes that were not annotated are assigned COG "?"
+    
+    Parameters
+    ----------
+    df_genes : pd.DataFrame
+        Binary gene x strain table
+    df_eggnog : pd.DataFrame
+        DataFrame loaded from *.emapper.annotation file. Index column
+        should be processed into format matching index of df_genes.
+    core_min : float
+        Defines core genes as frequency > core_min
+    unique_max : float 
+        Defines unique genes as frequency < unique_max. Accessory
+        genes are genes with unique_max <= frequency <= core_min
+    include_totals : bool
+        If True, adds a row with the total genes per segment (default True)
+        
+    Returns
+    -------
+    df_cog_segments : pd.DataFrame
+        COG x pangenome segment (core, accessory, unique) count table.
+    '''
+    
+    ''' Identify core, accessory, and unique genes '''
+    df_gene_counts = df_genes.fillna(0).sum(axis=1)
+    core_genes = df_gene_counts[df_gene_counts > core_min].index
+    unique_genes = df_gene_counts[df_gene_counts < unique_max].index
+    accessory_genes = df_gene_counts[np.logical_and(df_gene_counts <= core_min, df_gene_counts >= unique_max)]
+    
+    ''' Identify represented cogs (unpack multi-cog annotations) '''
+    df_cogs = df_eggnog['COG cat']
+    cogs = df_cogs.unique()
+    cogs = sorted(filter(lambda x: not ',' in x, cogs))
+    
+    ''' Count occurence of each COG + unannotated "?" '''
+    cog_counts = np.zeros((len(cogs) + 1, 3))
+    segments = ['core', 'accessory', 'unique']
+    for g, gene_set in enumerate([core_genes, accessory_genes, unique_genes]):
+        df_set_cogs = df_cogs[gene_set].fillna('?')
+        for c, cog in enumerate(cogs+['?']):
+            df_cog_specific = df_set_cogs[df_set_cogs.map(lambda x: cog in x)]
+            cog_counts[c,g] = df_cog_specific.shape[0]
+    df_cog_segments = pd.DataFrame(index=cogs+['?'], columns=segments, data=cog_counts)
+    
+    ''' Optionally add the total genes per segment '''
+    if include_totals:
+        counts = (len(core_genes), len(accessory_genes), len(unique_genes))
+        df = pd.DataFrame(index=segments, columns=['TOTAL'], data=counts).T
+        df_cog_segments = pd.concat([df_cog_segments,df], axis=0)
+    
+    return df_cog_segments
+
+
+def count_segment_go(df_genes, df_eggnog, core_min, unique_max, include_totals=True):
+    ''' 
+    Count the number of core, accessory, and unique genes per GO term.
+    Genes with multiple GO annotations are counted into all related
+    GO terms. Genes that were not annotated are assigned GO term "GO:?"
+    
+    Parameters
+    ----------
+    df_genes : pd.DataFrame
+        Binary gene x strain table
+    df_eggnog : pd.DataFrame
+        DataFrame loaded from *.emapper.annotation file. Index column
+        should be processed into format matching index of df_genes.
+    core_min : float
+        Defines core genes as frequency > core_min
+    unique_max : float 
+        Defines unique genes as frequency < unique_max. Accessory
+        genes are genes with unique_max <= frequency <= core_min
+    include_totals : bool
+        If True, adds a row with the total genes per segment (default True)
+        
+    Returns
+    -------
+    df_go_segments : pd.DataFrame
+        GO term x pangenome segment (core, accessory, unique) count table.
+    '''
+    
+    ''' Identify core, accessory, and unique genes '''
+    df_gene_counts = df_genes.fillna(0).sum(axis=1)
+    core_genes = df_gene_counts[df_gene_counts > core_min].index
+    unique_genes = df_gene_counts[df_gene_counts < unique_max].index
+    accessory_genes = df_gene_counts[np.logical_and(df_gene_counts <= core_min, df_gene_counts >= unique_max)]
+    
+    ''' Identifying GO terms '''
+    df_go = df_eggnog['GO_terms']
+    segments = ['core','accessory','unique']
+    go_counts = {}
+    for g, gene_set in enumerate([core_genes, accessory_genes, unique_genes]):
+        label = segments[g]
+        go_counts[label] = {}
+        df_set_go = df_go[gene_set].fillna('GO:?')
+        for gene, go_list in df_set_go.iteritems():
+            for go_term in go_list.split(','):
+                if not go_term in go_counts[label]:
+                    go_counts[label][go_term] = 0
+                go_counts[label][go_term] += 1
+    df_go_segments = pd.DataFrame.from_dict(go_counts).fillna(0).reindex(columns=segments)
+    
+    ''' Optionally add the total genes per segment '''
+    if include_totals:
+        counts = (len(core_genes), len(accessory_genes), len(unique_genes))
+        df = pd.DataFrame(index=segments, columns=['TOTAL'], data=counts).T
+        df_go_segments = pd.concat([df_go_segments,df], axis=0)
+        
+    return df_go_segments
+
 
 def get_allele_count(features, parent_abb='C', allele_abb='A', verify_features=False):
     '''
@@ -358,6 +542,21 @@ def plot_polar_dendogram(dend, figsize=(8,8), df_colors=None):
 
     ax.set_xticklabels([])
     return fig, ax
+
+
+def adjusted_lor(tp, fp, fn, tn):
+    ''' 
+    Log2 odds ratio with weighted pseudocounts, as described
+    in https://doi.org/10.1371/journal.pcbi.1007608.
+    Supports both singular values and array inputs.
+    '''
+    p = tp + fn
+    n = fp + tn
+    pr = np.true_divide(p, p+n)
+    nr = 1.0 - pr
+    numer = np.multiply(tp + pr, tn + nr)
+    denom = np.multiply(fp + nr, fn + pr)
+    return np.log2(np.true_divide(numer, denom))
 
 
 def __fast_pairwise_jaccard__(mat):
