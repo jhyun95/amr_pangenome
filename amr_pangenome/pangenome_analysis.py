@@ -16,7 +16,7 @@ import scipy.cluster.hierarchy as sch
 from mlgwas import sparse_arrays_to_sparse_matrix
 
 def test_segment_enrichment(df_annot_counts, min_freq=10, 
-        total_gene_counts='TOTAL', lor_only=False):
+        total_gene_counts='TOTAL', lor_only=False, merging={}):
     '''
     Tests whether the core, accessory, or unique genome is enriched for 
     a particular functional annotation (i.e. COG, GO term). 
@@ -35,6 +35,10 @@ def test_segment_enrichment(df_annot_counts, min_freq=10,
     lor_only : bool
         If True, computes LORs only. Much faster than computing Fisher's Exact
         test p-values, especially for many annotations as in GO terms (default False)
+    merging : dict
+        For each key:val, merges counts for key into counts for val. For example,
+        {'?':'S'} would merge missing COG annotations into the function unknown
+        category S. If val is None, ignores the key entirely (default {})
         
     Returns
     -------
@@ -45,9 +49,16 @@ def test_segment_enrichment(df_annot_counts, min_freq=10,
         Raw p-values from Fisher's exact tests.
     '''
     
+    ''' Merge or drop specified annotations '''
+    df_annot = df_annot_counts.copy()
+    for merge, target in merging.items():
+        if target != None: # merge into target category
+            df_annot.loc[target,:] += df_annot.loc[merge,:]
+        df_annot = df_annot.drop(merge, axis=0)
+    
     ''' Filter out rare mutations based on min_freq '''
-    annot_counts = df_annot_counts.sum(axis=1)
-    df_annot = df_annot_counts[annot_counts >= min_freq]
+    annot_counts = df_annot.sum(axis=1)
+    df_annot = df_annot[annot_counts >= min_freq]
     
     ''' Get total core, accessory, unique, and overall genes '''
     if type(total_gene_counts) == str:
@@ -236,6 +247,108 @@ def get_allele_count(features, parent_abb='C', allele_abb='A', verify_features=F
 def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
     '''
     Computes the gene frequency thresholds at which a gene can be categorized as 
+    core, accessory, or unique. Specifically, models the gene frequency distribution
+    as the sum of two power laws (one flipped), and fits the CDF to a five-parameter
+    function dervied from those power laws. Also identifies the inflection point and
+    the core and unique extremes relative to the inflection point and threshold.
+    
+          PMF(x;c1,c2,a1,a2) ~ c1 * x^-a1 + c2 * (n-x)^-a2
+        CDF(x;c1,c2,a1,a2,k) ~ c1/(1-a1) * x^(1-a1) - c2/(1-a2) * (n-x)^(1-a2) + k
+        
+    Where x = frequency, n = maximum frequency + 1, other variables are parameters.
+    
+    Pangenome segments example at 10%:
+    - N = total strains, R = computed inflection point
+    - Core: Observed in >= R + (1 - 0.1) * (N-R) strains
+    - Unique: Observed in <= 0.1 * R strains
+    - Accessory: Everything in between
+    
+    Parameters
+    ----------
+    df_genes : pd.DataFrame
+        Binary gene x strain table.
+    threshold : float
+        Proximity to each frequency extreme compared to inflection point
+        that determines if a gene is core, unique, or accessory (default 0.1)
+    ax : plt.axes
+        If provided, plots pangenome frequency CDF with segments (default None)
+        
+    Returns
+    -------
+    segments : tuple
+        2-tuple with (min core limit, max unique limit), not rounded.
+    popt : tuple
+        5-tuple with fitted CDF parameters (c1,c2,a1,a2,k). Note that
+        c1, c2, and k are scaled relative to the number of unique genes
+    r_squared : float
+        R^2 between fit and observed cumulative gene frequency distribution
+    ax : plt.axes
+        If ax is not None, returns axis with plots
+    '''
+
+    ''' Computing gene frequencies and frequency counts '''
+    df_gene_freq = df_genes.fillna(0).sum(axis=1)
+    df_freq_counts = df_gene_freq.value_counts()
+    df_freq_counts = df_freq_counts[sorted(df_freq_counts.index)]
+    cumulative_frequencies = np.cumsum(df_freq_counts.values)
+    frequency_bins = np.array(df_freq_counts.index)
+    
+    ''' Fitting CDF '''
+    X = frequency_bins.astype(float)
+    Y = cumulative_frequencies.astype(float)
+    n = max(frequency_bins) + 1
+    dual_power_cdf = lambda x,c1,c2,a1,a2,k: \
+        Y[0]*(c1*np.power(x,1.0-a1)/(1.0-a1) - c2*np.power(n-x,1.0-a2)/(1.0-a2) + k)
+    p0 = [1.0,1.0,2.0,2.0,1.0]
+    bounds = ([0.0,0.0,1.0,1.0,0.0],[np.inf,np.inf,np.inf,np.inf,Y[-1]/Y[0]])
+    popt, pcov = scipy.optimize.curve_fit(dual_power_cdf, X, Y, p0=p0, bounds=bounds, maxfev=100000)
+    
+    ''' Extracting inflection point of CDF and frequency thresholds '''
+    dual_power_pdf = lambda x,c1,c2,a1,a2: Y[0]*(c1*np.power(x,-a1) + c2*np.power(n-x,-a2))
+    dual_power_pdf_fit = lambda x: dual_power_pdf(x,*popt[:4]) # minimize PMF
+    res = scipy.optimize.minimize_scalar(dual_power_pdf_fit, bounds=[1,n-1])
+    inflection_freq = res.x # inflection point x, i.e. frequency threshold 
+    unique_strains_max = inflection_freq * threshold
+    core_strains_min = inflection_freq + (n - 1 - inflection_freq) * (1.0 - threshold)
+    segments = (core_strains_min, unique_strains_max)
+    
+    ''' Curve fit evaluation: R^2 
+        Yes I know R^2 isn't a good curve fit metric. Residual distributions are 
+        not random so this function is not a "true" model for gene frequency but
+        nonetheless sufficient for purposes of segmenting into core/accessory/unique. '''
+    Yfit = np.array(map(lambda x: dual_power_cdf(x,*popt), X)) # fitted CDF
+    SStot = np.sum(np.square(Y - Y.mean()))
+    SSres = np.sum(np.square(Y - Yfit))
+    r_squared = 1 - (SSres/SStot)
+    
+    ''' Optionally, generating plot '''
+    if ax:
+        ax.plot(X, Y, label='observed')
+        ax.plot(X, Yfit, label='fit', ls='--')
+        ax.scatter([inflection_freq], [dual_power_cdf(inflection_freq,*popt)], 
+                   label='inflection point', color='black', alpha=0.7)
+        ax.axvline(unique_strains_max, ls='--', color='k')
+        ax.axvline(core_strains_min, ls='--', color='k')
+        ax.axvline(inflection_freq, ls='--', color='lightgray')
+        
+        unique_rounded = int(unique_strains_max) + 1
+        core_rounded = int(core_strains_min)
+        unique_text = 'Unique:\n<' + str(unique_rounded)
+        core_text = 'Core:\n>' + str(core_rounded)
+        r2_text = 'R^2=' + str(np.round(r_squared,3))
+        ax.text(unique_strains_max + n*0.02, Y[0], unique_text, ha='left', va='bottom')
+        ax.text(core_strains_min - n*0.02, Y[0], core_text, ha='right', va='bottom')
+        ax.text(unique_strains_max + n*0.1, Y[-1], r2_text, ha='left', va='top')
+        ax.set_xlabel('Gene frequency')
+        ax.set_ylabel('Cumulative genes')
+        return segments, popt, r_squared, ax
+    else:
+        return segments, popt, r_squared
+
+
+def find_pangenome_segments_logistic(df_genes, threshold=0.1, ax=None):
+    '''
+    Computes the gene frequency thresholds at which a gene can be categorized as 
     core, accessory, or unique. Specifically, fits a three-parameter logistic 
     function for cumulative genes vs. max strains with gene (gene frequency),
     identifies the inflection point, and identifies the core and unique extremes
@@ -294,7 +407,6 @@ def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
     Yfit = Yfit * (np.max(Y) - np.min(Y)) + np.min(Y)
     
     ''' Segmenting into core/accessory/unique '''
-    threshold = 0.1
     inflection_scaled_x = M - np.log(v) / B
     inflection_scaled_y = generalized_logistic(inflection_scaled_x, *popt)
     inflection_genes = inflection_scaled_x * (np.max(X) - np.min(X)) + np.min(X)
@@ -319,10 +431,10 @@ def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
         ax.text(X[0], core_strains_min - yscale*0.02, core_text, ha='left', va='top')
         ax.text(X[0], (unique_strains_max + core_strains_min) * 0.5, accessory_text, ha='left', va='center')
         ax.set_xlabel('Cumulative genes')
-        ax.set_ylabel('Max strains with gene')
+        ax.set_ylabel('Max genomes with gene')
         return segments, popt, ax
     else:
-        return segments, pot
+        return segments, popt
     
 
 def fit_heaps_law(df_pan_core, drop_early=0, figsize=(8,4)):
@@ -435,6 +547,62 @@ def estimate_pan_core_size(df_genes, num_iter=1000, log_batch=100):
     df_pan_core = pd.DataFrame(index=iter_index, columns=pan_cols + core_cols,
                                data=np.hstack([pan_genomes, core_genomes]))
     return df_pan_core
+
+
+def count_variant_abundance(df_genes, df_variants, keep_variant_names=False):
+    '''
+    Counts the distribution of variants per gene. Assumes that genes
+    are named <org>_C#, and variants <org>_C#X#, where X = A,U,D.
+    
+    Parameters
+    ----------
+    df_genes : pd.DataFrame
+        Binary gene x strain table
+    df_variants: pd.DataFrame
+        Binary variant x strain table
+    keep_variant_names : bool
+        If true, stores variant names in output. Otherwise,
+        assumes that variants are named C#X0, C#X1, ... and
+        stores counts indexed by variant name 0,1, ... 
+        
+    Returns
+    -------
+    variant_abundance : dict
+        Maps {gene:[v0 count, v1 count, etc.]} or
+        Maps {gene:variant:count}
+    '''
+    gene_counts = df_genes.fillna(0).sum(axis=1)
+    variant_counts = df_variants.fillna(0).sum(axis=1)
+    
+    ''' Identify the type of variant '''
+    gene, variant = variant_counts.index[0].split('_')
+    variant_type = None
+    for vtype in ['A','U','D']:
+        if vtype in variant:
+            variant_type = vtype; break
+    if variant_type is None:
+        print 'Variant type could not be identified, aborting.'; return
+    
+    ''' Count variant distributions '''
+    variant_abundance = {}
+    for variant, count in variant_counts.iteritems():
+        gene = variant[:variant.rindex(variant_type)]
+        if not gene in variant_abundance:
+            variant_abundance[gene] = {}
+        variant_abundance[gene][variant] = count
+    
+    ''' Optionally, compress abundance information '''
+    if not keep_variant_names:
+        for gene in variant_abundance:
+            abundances = variant_abundance[gene]
+            ind_to_abundance = {int(variant[variant.rindex(variant_type)+1:]):count
+                                for variant,count in abundances.items()}
+            max_ind = max(ind_to_abundance.keys())
+            compressed_abundances = [0] * (max_ind + 1)
+            for ind, count in ind_to_abundance.items():
+                compressed_abundances[ind] = count
+            variant_abundance[gene] = compressed_abundances
+    return variant_abundance
 
 
 def plot_strain_hierarchy(df_features, df_labels=None, colors={1:'red', 0:'blue'}, 
