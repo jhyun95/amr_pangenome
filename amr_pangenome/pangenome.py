@@ -1363,8 +1363,8 @@ def validate_table_against_fasta(df_features, genome_fasta_paths,
     print 'Non-redundant sequences:', len(seqhash_to_feature)
 
     ''' Validate individual genomes against table '''
-    missing_features = 0
-    def check_genome_sequence(seq_blocks, genome_features, feature_name):
+    
+    def check_genome_sequence(seq_blocks, genome_features, feature_name, num_missing):
         if len(seq_blocks) > 0:
             seq = ''.join(seq_blocks)
             if not (allele_names is None):
@@ -1381,9 +1381,10 @@ def validate_table_against_fasta(df_features, genome_fasta_paths,
                 feature = seqhash_to_feature[seqhash] # original name to NR name
                 genome_features.add(feature)
             else:
-                missing_features += 1
+                num_missing += 1
         return genome_features
-
+    
+    missing_features = 0
     feature_counts = dfa.sum() # genome x total features
     for i, genome_fasta in enumerate(sorted(genome_fasta_paths)):
         if (i+1) % log_group == 0:
@@ -1394,12 +1395,13 @@ def validate_table_against_fasta(df_features, genome_fasta_paths,
             feature_header = ''; seq_blocks = []
             for line in f_fasta:
                 if line[0] == '>': # new sequence encountered
-                    genome_features = check_genome_sequence(seq_blocks, genome_features, feature_header)
+                    genome_features = check_genome_sequence(seq_blocks, genome_features, feature_header, missing_features)
                     feature_header = line[1:].strip()
                     seq_blocks = []
                 else: # sequence encountered
                     seq_blocks.append(line.strip())
-            genome_features = check_genome_sequence(seq_blocks, genome_features, feature_header) # process last record
+            genome_features = check_genome_sequence(seq_blocks, genome_features, feature_header, missing_features) 
+            # process last record
             
         ''' Check that identified features are consistent with the table '''
         genome = __get_genome_from_filename__(genome_fasta) # trim off full path and .fna/.faa
@@ -1678,7 +1680,7 @@ def extract_annotations(genome_gffs, allele_name_file, annotations_out,
         shutil.move(tmp_out, annotations_out)
     
 
-def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None):
+def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None, filter_fxn=None):
     ''' Loads sequences from a FAA or FNA file into a dict
         mapping headers to sequences. Can optionally apply a 
         function to all header (header_fxn) or to all
@@ -1690,16 +1692,18 @@ def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None):
         for line in f:
             if line[0] == '>': # header line
                 if len(header) > 0 and len(seq) > 0:
-                    seq = seq_fxn(seq) if seq_fxn else seq
-                    header_to_seq[header] = seq
+                    if filter_fxn is None or filter_fxn(header):
+                        seq = seq_fxn(seq) if seq_fxn else seq
+                        header_to_seq[header] = seq
                 header = line.strip()[1:]
                 header = header_fxn(header) if header_fxn else header
                 seq = ''
             else: # sequence line
                 seq += line.strip()
         if len(header) > 0 and len(seq) > 0:
-            seq = seq_fxn(seq) if seq_fxn else seq
-            header_to_seq[header] = seq
+            if filter_fxn is None or filter_fxn(header):
+                seq = seq_fxn(seq) if seq_fxn else seq
+                header_to_seq[header] = seq
     return header_to_seq
 
 

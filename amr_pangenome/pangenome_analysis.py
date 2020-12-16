@@ -137,12 +137,11 @@ def count_segment_cog(df_genes, df_eggnog, core_min, unique_max, include_totals=
     ''' Count occurence of each COG + unannotated "?" '''
     cog_counts = np.zeros((len(cogs) + 1, 3))
     segments = ['core', 'accessory', 'unique']
+    df_cog_segments = []
     for g, gene_set in enumerate([core_genes, accessory_genes, unique_genes]):
-        df_set_cogs = df_cogs[gene_set].fillna('?')
-        for c, cog in enumerate(cogs+['?']):
-            df_cog_specific = df_set_cogs[df_set_cogs.map(lambda x: cog in x)]
-            cog_counts[c,g] = df_cog_specific.shape[0]
-    df_cog_segments = pd.DataFrame(index=cogs+['?'], columns=segments, data=cog_counts)
+        df_cog_segments.append(count_geneset_eggnog(gene_set, df_eggnog, annot_type='COG'))
+        df_cog_segments[-1].name = segments[g]
+    df_cog_segments = pd.concat(df_cog_segments, axis=1)
     
     ''' Optionally add the total genes per segment '''
     if include_totals:
@@ -187,19 +186,12 @@ def count_segment_go(df_genes, df_eggnog, core_min, unique_max, include_totals=T
     accessory_genes = df_gene_counts[np.logical_and(df_gene_counts <= core_min, df_gene_counts >= unique_max)]
     
     ''' Identifying GO terms '''
-    df_go = df_eggnog['GO_terms']
     segments = ['core','accessory','unique']
     go_counts = {}
     for g, gene_set in enumerate([core_genes, accessory_genes, unique_genes]):
         label = segments[g]
-        go_counts[label] = {}
-        df_set_go = df_go[gene_set].fillna('GO:?')
-        for gene, go_list in df_set_go.iteritems():
-            for go_term in go_list.split(','):
-                if not go_term in go_counts[label]:
-                    go_counts[label][go_term] = 0
-                go_counts[label][go_term] += 1
-    df_go_segments = pd.DataFrame.from_dict(go_counts).fillna(0).reindex(columns=segments)
+        go_counts[label] = count_geneset_eggnog(gene_set, df_eggnog, 'GO')
+    df_go_segments = go_counts.fillna(0).reindex(columns=segments)
     
     ''' Optionally add the total genes per segment '''
     if include_totals:
@@ -210,6 +202,23 @@ def count_segment_go(df_genes, df_eggnog, core_min, unique_max, include_totals=T
     return df_go_segments
 
 
+def count_geneset_eggnog(geneset, df_eggnog, annot_type='COG'):
+    ''' 
+    Extracts and counts COGs/GOs for a set of genes from raw eggnog annotations.
+    '''
+    column = {'COG': 'COG cat', 'GO': 'GO_terms'}[annot_type] # column from raw eggnog table
+    replacement = {'COG':'?', 'GO':'GO:?'}[annot_type] # replace missing COGs with ?, missing GOs with GO:?
+    df_set_annot = df_eggnog.loc[:,column].reindex(index=geneset).fillna(replacement)
+    annot_counts = {} # counts within gene set
+    for gene, annots in df_set_annot.iteritems():
+        for term in annots.split(','):
+            term = term.strip()
+            if not term in annot_counts:
+                annot_counts[term] = 0
+            annot_counts[term] += 1
+    return pd.Series(annot_counts)
+    
+    
 def get_allele_count(features, parent_abb='C', allele_abb='A', verify_features=False):
     '''
     Computes the number of alleles per parent feature (i.e. number of
@@ -287,8 +296,11 @@ def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
     '''
 
     ''' Computing gene frequencies and frequency counts '''
-    df_gene_freq = df_genes.fillna(0).sum(axis=1)
-    df_freq_counts = df_gene_freq.value_counts()
+    if type(df_genes) == pd.DataFrame: # data frame provided
+        df_gene_freq = df_genes.fillna(0).sum(axis=1)
+    else: # array provided
+        df_gene_freq = pd.Series(data=df_genes.sum(axis=1), index=map(lambda x: 'G' + str(x), range(df_genes.shape[0])))
+    df_freq_counts = df_gene_freq.value_counts()    
     df_freq_counts = df_freq_counts[sorted(df_freq_counts.index)]
     cumulative_frequencies = np.cumsum(df_freq_counts.values)
     frequency_bins = np.array(df_freq_counts.index)
@@ -306,7 +318,7 @@ def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
     ''' Extracting inflection point of CDF and frequency thresholds '''
     dual_power_pdf = lambda x,c1,c2,a1,a2: Y[0]*(c1*np.power(x,-a1) + c2*np.power(n-x,-a2))
     dual_power_pdf_fit = lambda x: dual_power_pdf(x,*popt[:4]) # minimize PMF
-    res = scipy.optimize.minimize_scalar(dual_power_pdf_fit, bounds=[1,n-1])
+    res = scipy.optimize.minimize_scalar(dual_power_pdf_fit, method='bounded', bounds=[1,n-1])
     inflection_freq = res.x # inflection point x, i.e. frequency threshold 
     unique_strains_max = inflection_freq * threshold
     core_strains_min = inflection_freq + (n - 1 - inflection_freq) * (1.0 - threshold)
