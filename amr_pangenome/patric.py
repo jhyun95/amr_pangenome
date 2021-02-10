@@ -63,15 +63,22 @@ def download_patric_genomes(genomes, output_dir, filetypes=['fna','faa','gff','s
             os.mkdir(genome_dir)
 
         ''' Process individual files '''
-        for source_filetype, target_filetype in source_target_filetypes:
-            source = genome_source + '.' + source_filetype
-            target = genome_target + '.' + target_filetype
-            if os.path.exists(target) and not redownload:
-                print i+1, 'Already exists:', target
-            else:
-                print i+1, source, '->', target
-                urllib.urlretrieve(source, target)
-                urllib.urlcleanup()
+        bad_genomes = []
+        try:
+            for source_filetype, target_filetype in source_target_filetypes:
+                source = genome_source + '.' + source_filetype
+                target = genome_target + '.' + target_filetype
+                if os.path.exists(target) and not redownload:
+                    print i+1, 'Already exists:', target
+                else:
+                    print i+1, source, '->', target
+                    urllib.urlretrieve(source, target)
+                    urllib.urlcleanup()
+        except IOError: # genome ID not found
+            print 'Bad genome ID:', genome
+            os.rmdir(genome_dir)
+            bad_genomes.append(genome)
+    return bad_genomes
    
 
 def validate_patric_genomes(genomes_dir, summary_file='data/PATRIC/PATRIC_genome_summary.tsv'):

@@ -253,6 +253,121 @@ def get_allele_count(features, parent_abb='C', allele_abb='A', verify_features=F
     return dict(collections.Counter(parent_features))
 
 
+def estimate_segment_curves(df_genes, df_mlst=None, steps=20, threshold=0.1, iterations=10, min_genomes=20):
+    '''
+    Randomly shuffles genome order and computes the size of the pan,
+    core, accessory, and unique genomes as genomes are introduced 
+    sequentially. Pan-genome size is computed for everything genome,
+    core/accessory/unique genome sizes are computed for a fixed number
+    of steps.
+    
+    Parameters
+    ----------
+    df_genes : pd.DataFrame
+        Binary gene x strain table
+    df_mlst : pd.DataFrame
+        Organisms-specific compiled MLST table. If provided, shuffles 
+        LST types and picks 1 genomes per type per iteration instead 
+        (default None)
+    steps : int
+        Number of equally spaced genome counts at which to 
+        compute core/accessory/unique genome sizes. If -1, uses
+        maximum number of steps (default 20)
+    threshold : float
+        Proximity to each frequency extreme compared to inflection point
+        that determines if a gene is core, unique, or accessory. Same
+        as what is provided to find_pangenome_segments() (default 0.1) 
+    iterations : int
+        Number of random genome order shuffles to generate (default 10)
+    min_genomes : int
+        Minimum number of genomes to attempt segmentation (default 20)
+        
+    Returns
+    -------
+    pg_curves : np.ndarray
+        (iterations x n_genomes) array with the size of the pangenome as 
+        each genome is sequentially introduced within each genome shuffle.
+        pg_curves[i,j] = pan-genome size at j genomes in interation i
+    segment_curves : np.ndarray
+        (3 x iterations x steps) array with the size of the core,
+        accessory, and unique genomes as each genome is sequentially
+        introduced within in each genome shuffle, computed at steps.
+        segment_curves[0,i,j] = core genome size at j step in iteration i
+    inflection_points : np.ndarray
+        (iteration x steps) array with the frequency inflection point
+        as each genome is sequentially introduced within each genome 
+        shuffle, computed at steps.
+    genome_limits : np.ndarray
+        Genomes introduced at each step of computing core, accessory, and
+        unique genome sizes.
+    '''
+    if type(df_genes) == pd.DataFrame: # use values array from dataframe
+        gene_data = df_genes.fillna(0).values
+    else: # use raw numpy array
+        gene_data = df_genes
+    
+    ''' Initialize output wrt mlst data, genome/mlst counts, and step size '''
+    if not df_mlst is None:
+        unique_mlsts = df_mlst.mlst.unique()
+        n_mlsts = len(unique_mlsts)
+    n_genes, n_genomes = gene_data.shape
+    n_samples = n_genomes if df_mlst is None else n_mlsts
+    starting_genomes = max(n_samples/steps, min_genomes)
+    
+    pg_curves = np.zeros(shape=(iterations, n_samples)) # iteration x running pangenome size
+    if steps > 0:
+        genome_limits = np.linspace(starting_genomes, n_samples, steps, dtype=int)
+    else:
+        genome_limits = np.arange(starting_genomes, n_samples+1) # genomes per step for segmenting
+    n_steps = len(genome_limits)
+    segment_curves = np.zeros(shape=(3, iterations, n_steps)) # (core,acc,unique) x iteration x running size
+    inflection_points = np.zeros(shape=(iterations, n_steps)) # iteration x running frequency inflection point
+
+    ''' Generate random shufflings -> pan-genome curves iterations '''
+    for i in range(iterations):
+        print 'Iteration', i+1
+        if df_mlst is None: # genome order shuffling
+            genome_order = np.arange(n_genomes)
+            np.random.shuffle(genome_order)
+            gene_data_shuffled = gene_data[:,genome_order] # reorder genomes in full gene table
+        else: # MLST based shuffling
+            np.random.shuffle(unique_mlsts)
+            mlst_representative_genomes = []
+            for mlst in unique_mlsts:
+                df_mlst_specific = df_mlst[df_mlst.mlst == mlst]
+                if df_mlst_specific.shape[0] == 1:
+                    mlst_representative_genomes.append(df_mlst_specific.index[0])
+                else:
+                    selected = np.random.randint(0,df_mlst_specific.shape[0])
+                    mlst_representative_genomes.append(df_mlst_specific.index[selected])
+            df_mlst_genes = df_genes.loc[:,mlst_representative_genomes]
+            gene_data_shuffled = df_mlst_genes.fillna(0).values
+        
+        ''' Computing pan-genome curve '''
+        freqs = collections.Counter(np.argmax(gene_data_shuffled, axis=1))
+        freqs_ordered = [freqs[x] if x in freqs else 0 for x in np.arange(n_samples)]
+        missing_genes = (gene_data_shuffled.sum(axis=1) == 0).sum()
+        pg_curves[i,:] = np.cumsum(freqs_ordered) - missing_genes
+    
+        ''' Segmenting into core/accessory/unique genomes '''
+        for g,genome_limit in enumerate(genome_limits):
+            ''' Fitting inflection point '''
+            subset_data = gene_data_shuffled[:, :genome_limit]
+            segments, popt, r2, mae = find_pangenome_segments(subset_data, threshold=threshold, ax=None) 
+            segments = np.array(segments)
+            inflection_freq = segments[1] / threshold
+
+            ''' Computing core, accessory, unique genome sizes '''
+            subset_counts = subset_data.sum(axis=1)
+            missing_genes = (subset_counts == 0).sum()
+            subset_size = n_genes - missing_genes
+            inflection_points[i,g] = inflection_freq
+            segment_curves[0,i,g] = (subset_counts > segments[0]).sum() # core
+            segment_curves[2,i,g] = (subset_counts < segments[1]).sum() - missing_genes # unique
+            segment_curves[1,i,g] = subset_size - segment_curves[0,i,g] - segment_curves[2,i,g] # accessory
+    return pg_curves, segment_curves, inflection_points, genome_limits
+
+
 def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
     '''
     Computes the gene frequency thresholds at which a gene can be categorized as 
@@ -300,7 +415,9 @@ def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
         df_gene_freq = df_genes.fillna(0).sum(axis=1)
     else: # array provided
         df_gene_freq = pd.Series(data=df_genes.sum(axis=1), index=map(lambda x: 'G' + str(x), range(df_genes.shape[0])))
-    df_freq_counts = df_gene_freq.value_counts()    
+    df_freq_counts = df_gene_freq.value_counts()
+    if 0 in df_freq_counts.index: # filter out unobserved genes (i.e. when subsetting genomes)
+        df_freq_counts.drop(index=0, inplace=True)
     df_freq_counts = df_freq_counts[sorted(df_freq_counts.index)]
     cumulative_frequencies = np.cumsum(df_freq_counts.values)
     frequency_bins = np.array(df_freq_counts.index)
@@ -324,14 +441,15 @@ def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
     core_strains_min = inflection_freq + (n - 1 - inflection_freq) * (1.0 - threshold)
     segments = (core_strains_min, unique_strains_max)
     
-    ''' Curve fit evaluation: R^2 
-        Yes I know R^2 isn't a good curve fit metric. Residual distributions are 
-        not random so this function is not a "true" model for gene frequency but
-        nonetheless sufficient for purposes of segmenting into core/accessory/unique. '''
+    ''' Curve fit evaluation: R^2 and MAE
+        R^2 technically invalid for nonlinear fits but commonly reported
+        MAE is more relevant for judging nonlinear models '''
     Yfit = np.array(map(lambda x: dual_power_cdf(x,*popt), X)) # fitted CDF
     SStot = np.sum(np.square(Y - Y.mean()))
     SSres = np.sum(np.square(Y - Yfit))
     r_squared = 1 - (SSres/SStot)
+    # rmse = np.sqrt(np.square(Y - Yfit).mean())
+    mae = np.abs(Y - Yfit).mean()
     
     ''' Optionally, generating plot '''
     if ax:
@@ -348,14 +466,16 @@ def find_pangenome_segments(df_genes, threshold=0.1, ax=None):
         unique_text = 'Unique:\n<' + str(unique_rounded)
         core_text = 'Core:\n>' + str(core_rounded)
         r2_text = 'R^2=' + str(np.round(r_squared,3))
+        mae_text = 'MAE=' + str(np.round(mae,2))
         ax.text(unique_strains_max + n*0.02, Y[0], unique_text, ha='left', va='bottom')
         ax.text(core_strains_min - n*0.02, Y[0], core_text, ha='right', va='bottom')
-        ax.text(unique_strains_max + n*0.1, Y[-1], r2_text, ha='left', va='top')
+        ax.text(unique_strains_max + n*0.1, 0.95*Y[-1], r2_text, ha='left', va='bottom')
+        ax.text(unique_strains_max + n*0.1, 0.95*Y[-1], mae_text, ha='left', va='top')
         ax.set_xlabel('Gene frequency')
         ax.set_ylabel('Cumulative genes')
-        return segments, popt, r_squared, ax
+        return segments, popt, r_squared, mae, ax
     else:
-        return segments, popt, r_squared
+        return segments, popt, r_squared, mae
 
 
 def find_pangenome_segments_logistic(df_genes, threshold=0.1, ax=None):
@@ -449,7 +569,7 @@ def find_pangenome_segments_logistic(df_genes, threshold=0.1, ax=None):
         return segments, popt
     
 
-def fit_heaps_law(df_pan_core, drop_early=0, figsize=(8,4)):
+def fit_heaps_law_old(df_pan_core, drop_early=0, figsize=(8,4)):
     '''
     Esimates pan-genome openness by fitting Heap's Law between the 
     new gene rate and the number of genomes. Based on median pan-genome
