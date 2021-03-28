@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import subprocess
 import pandas as pd
 from Bio import SeqIO
 import re
@@ -66,28 +67,44 @@ def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
     return ref_seq
 
 
-parse_fa = SeqIO.parse(fa_file, 'fasta')
-rs = next(parse_fa)
-count = 0
-# tmpdir to save the interim fasta files
-tempdir = tempfile.mkdtemp()
-print(tempdir)
-while rs:
-    # get the next
-    gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
-    print(gene)
-    if org + '_' + gene + 'A0' in single_allele:  # skip if gene with one allele
+def find_junctions(fasta, kmer=35, outdir='junctions_out'):
+
+    parse_fa = SeqIO.parse(fasta, 'fasta')
+    rs = next(parse_fa)
+    count = 0
+    # tmpdir to save the interim fasta files/
+    tempdir = tempfile.mkdtemp()
+    os.chmod(tempdir, 0o755)
+    print(tempdir)
+    while rs:
+        # get the next
+        gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
+        if org + '_' + gene + 'A0' in single_allele:  # skip if gene with one allele
+            try:
+                rs = next(parse_fa)
+                continue
+            except StopIteration:  # end of file
+                break
+
+        rs = group_seq(parse_fa, gene, rs, tempdir)
+
+        # run twopaco on the fasta files
+        fa_list = os.listdir(tempdir)
+        fpaths = [os.path.join(tempdir, i) for i in fa_list]
+        cmd = ['../bin/twopaco', '-f', str(kmer)]
+        cmd.extend(fpaths)
         try:
-            rs = next(parse_fa)
-            continue
-        except StopIteration:  # end of file
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError as e:
+            print(f'Junction search with TwoPaco failed with the following error:\n{e.output}')
+
+        # TODO: run twopaco and graphdump here
+        # TODO: delete all files in the temp folder
+        # for testing purposes only
+        count += 1
+        if count == 1:
             break
 
-    rs = group_seq(parse_fa, gene, rs, tempdir)
 
-    # TODO: run twopaco and graphdump here
-    # TODO: delete all files in the temp folder
-    # for testing purposes only
-    count += 1
-    if count == 2:
-        break
+# main function to run the file
+find_junctions(fa_file, 25)
