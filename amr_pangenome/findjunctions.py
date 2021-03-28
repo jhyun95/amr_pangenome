@@ -104,30 +104,34 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
         rs = group_seq(parse_fa, gene, rs, tempdir)
 
         # run twopaco on the fasta files
-        fa_list = os.listdir(tempdir)
-        fpaths = [os.path.join(tempdir, i) for i in fa_list]
-        db_out = os.path.join(tempdir, 'debrujin.bin')
-        tp_cmd = ['../bin/twopaco', '-f', str(kmer), '-o', db_out]
-        tp_cmd.extend(fpaths)
-        try:
-            subprocess.check_output(tp_cmd, stderr=subprocess.STDOUT)
-        except subprocess.CalledProcessError as e:
-            print('Running the TwoPaco command below exited with the following error message:\n')
-            print(' '.join(tp_cmd) + '\n')
-            print(e.stdout.decode('utf-8'))
-
-
+        db_out = run_twopaco(tempdir, kmer)
         # run graphdump on the output of twopaco
         gd_cmd = ['../bin/graphdump', '-f', outfmt, '-k', str(kmer), db_out]
         with open(os.path.join(outdir, 'graphdump.txt'), 'w') as gd_out:
             subprocess.call(gd_cmd, stdout=gd_out, stderr=subprocess.STDOUT)
 
+        # TODO: Reformat the graphdump output into junction by genome, should be new function
         # TODO: delete all files in the temp folder
+
         # for testing purposes only
         count += 1
         if count == 1:
             break
 
 
+def run_twopaco(tempdir, kmer):
+    fa_list = os.listdir(tempdir)
+    fpaths = [os.path.join(tempdir, i) for i in fa_list]
+    db_out = os.path.join(tempdir, 'debrujin.bin')
+    tp_cmd = ['../bin/twopaco', '-f', str(kmer), '-o', db_out]
+    tp_cmd.extend(fpaths)
+    try:
+        subprocess.check_output(tp_cmd, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        print('Running the TwoPaco command below exited with the following error message:\n')
+        print(' '.join(tp_cmd) + '\n')
+        print(e.stdout.decode('utf-8'))
+        sys.exit(1)
+    return db_out
 # main function to run the file
-find_junctions(fa_file, ';r')
+find_junctions(fa_file)
