@@ -67,13 +67,20 @@ def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
     return ref_seq
 
 
-def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.csv'):
+def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.csv',
+                   outfmt='group'):
 
     if not os.path.isdir(outdir):
         os.mkdir(outdir)
 
     if not outname.endswith('.csv'):
         outname += '.csv'
+
+    if outfmt not in ['group', 'gfa2']:
+        raise ValueError('outfmt must be either \'group\' or \'gfa2\'')
+
+    if outfmt == 'gfa2':
+        raise NotImplementedError('This feature is coming to soon. Use \'group\' for outfmt instead')
 
     parse_fa = SeqIO.parse(fasta, 'fasta')
     rs = next(parse_fa)
@@ -97,13 +104,18 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
         # run twopaco on the fasta files
         fa_list = os.listdir(tempdir)
         fpaths = [os.path.join(tempdir, i) for i in fa_list]
-        cmd = ['../bin/twopaco', '-f', str(kmer) , '-o', os.path.join(tempdir, 'debrujin.bin')]
-        cmd.extend(fpaths)
-        try:
-            subprocess.check_call(cmd)
-        except subprocess.CalledProcessError as e:
-            print(f'Junction search with TwoPaco failed with the following error:\n{e.output}')
+        db_out = os.path.join(tempdir, 'debrujin.bin')
+        tp_cmd = ['../bin/twopaco', '-f', str(kmer) , '-o', db_out]
+        tp_cmd.extend(fpaths)
+        subprocess.call(tp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
+        # run graphdump on the output of twopaco
+        gd_cmd = ['../bin/graphdump', '-f', outfmt, '-k', str(kmer), db_out]
+        try:
+            with open(os.path.join(outdir, 'graphdump.txt'), 'w') as gd_out:
+                subprocess.call(gd_cmd, stdout=gd_out)
+        except subprocess.CalledProcessError as e:
+            print(f'GraphDump failed with the following error:\n{e.output}')
 
         # TODO: delete all files in the temp folder
         # for testing purposes only
