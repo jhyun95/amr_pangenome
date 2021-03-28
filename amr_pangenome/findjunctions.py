@@ -82,15 +82,17 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
     if outfmt == 'gfa2':
         raise NotImplementedError('This feature is coming to soon. Use \'group\' for outfmt instead')
 
-    parse_fa = SeqIO.parse(fasta, 'fasta')
-    rs = next(parse_fa)
-    count = 0
-    # tmpdir to save the interim fasta files/
+    # tmpdir to save the interim fasta files
     tempdir = tempfile.mkdtemp()
     os.chmod(tempdir, 0o755)
     print(tempdir)
+
+    parse_fa = SeqIO.parse(fasta, 'fasta')
+    rs = next(parse_fa)
+    count = 0
+
     while rs:
-        # get the next
+        # get the next gene
         gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
         if org + '_' + gene + 'A0' in single_allele:  # skip if gene with one allele
             try:
@@ -105,17 +107,20 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
         fa_list = os.listdir(tempdir)
         fpaths = [os.path.join(tempdir, i) for i in fa_list]
         db_out = os.path.join(tempdir, 'debrujin.bin')
-        tp_cmd = ['../bin/twopaco', '-f', str(kmer) , '-o', db_out]
+        tp_cmd = ['../bin/twopaco', '-f', str(kmer), '-o', db_out]
         tp_cmd.extend(fpaths)
-        subprocess.call(tp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        try:
+            subprocess.check_output(tp_cmd, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as e:
+            print('Running the TwoPaco command below exited with the following error message:\n')
+            print(' '.join(tp_cmd) + '\n')
+            print(e.stdout.decode('utf-8'))
+
 
         # run graphdump on the output of twopaco
         gd_cmd = ['../bin/graphdump', '-f', outfmt, '-k', str(kmer), db_out]
-        try:
-            with open(os.path.join(outdir, 'graphdump.txt'), 'w') as gd_out:
-                subprocess.call(gd_cmd, stdout=gd_out)
-        except subprocess.CalledProcessError as e:
-            print(f'GraphDump failed with the following error:\n{e.output}')
+        with open(os.path.join(outdir, 'graphdump.txt'), 'w') as gd_out:
+            subprocess.call(gd_cmd, stdout=gd_out, stderr=subprocess.STDOUT)
 
         # TODO: delete all files in the temp folder
         # for testing purposes only
@@ -125,4 +130,4 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
 
 
 # main function to run the file
-find_junctions(fa_file, 25)
+find_junctions(fa_file, ';r')
