@@ -67,7 +67,13 @@ def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
     return ref_seq
 
 
-def find_junctions(fasta, kmer=35, outdir='junctions_out'):
+def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.csv'):
+
+    if not os.path.isdir(outdir):
+        os.mkdir(outdir)
+
+    if not outname.endswith('.csv'):
+        outname += '.csv'
 
     parse_fa = SeqIO.parse(fasta, 'fasta')
     rs = next(parse_fa)
@@ -91,14 +97,14 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out'):
         # run twopaco on the fasta files
         fa_list = os.listdir(tempdir)
         fpaths = [os.path.join(tempdir, i) for i in fa_list]
-        cmd = ['../bin/twopaco', '-f', str(kmer)]
+        cmd = ['../bin/twopaco', '-f', str(kmer) , '-o', os.path.join(tempdir, 'debrujin.bin')]
         cmd.extend(fpaths)
         try:
             subprocess.check_call(cmd)
         except subprocess.CalledProcessError as e:
             print(f'Junction search with TwoPaco failed with the following error:\n{e.output}')
 
-        # TODO: run twopaco and graphdump here
+
         # TODO: delete all files in the temp folder
         # for testing purposes only
         count += 1
