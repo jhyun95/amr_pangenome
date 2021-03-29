@@ -6,9 +6,7 @@ import pandas as pd
 from Bio import SeqIO
 import re
 import tempfile
-
-import sys  # to utilize twopaco and graphdump
-sys.path.append('../bin/')
+import sys
 
 res_dir = '/home/saugat/Documents/CC8_fasta/CDhit_res'
 org = 'CC8'
@@ -101,14 +99,18 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
             except StopIteration:  # end of file
                 break
 
+        # get all alleles of a gene cluster, then run twopaco and graphdump
         rs = group_seq(parse_fa, gene, rs, tempdir)
-
-        # run twopaco on the fasta files
         db_out = run_twopaco(tempdir, kmer)
-        # run graphdump on the output of twopaco
         gd_cmd = ['../bin/graphdump', '-f', outfmt, '-k', str(kmer), db_out]
-        with open(os.path.join(outdir, 'graphdump.txt'), 'w') as gd_out:
+        graph_path = os.path.join(tmpdir, 'graphdump.txt')
+        with open(graph_path, 'w') as gd_out:
             subprocess.call(gd_cmd, stdout=gd_out, stderr=subprocess.STDOUT)
+
+        with open(graph_path, 'r') as gfile:
+            for lines in gfile.readlines():
+                junctions = lines.split(';')
+
 
         # TODO: Reformat the graphdump output into junction by genome, should be new function
         # TODO: delete all files in the temp folder
@@ -120,6 +122,20 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
 
 
 def run_twopaco(tempdir, kmer):
+    """
+
+    Parameters
+    ----------
+    tempdir: str
+        temporary directory where all the fasta files are stored
+    kmer: int
+        size of the kmers to be used for twopaco junction finder
+
+    Returns
+    -------
+    db_out: str
+        path to the file of containing the output of twopaco
+    """
     fa_list = os.listdir(tempdir)
     fpaths = [os.path.join(tempdir, i) for i in fa_list]
     db_out = os.path.join(tempdir, 'debrujin.bin')
@@ -133,5 +149,7 @@ def run_twopaco(tempdir, kmer):
         print(e.stdout.decode('utf-8'))
         sys.exit(1)
     return db_out
+
+
 # main function to run the file
 find_junctions(fa_file)
