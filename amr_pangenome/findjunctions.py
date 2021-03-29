@@ -80,11 +80,11 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
     if outfmt == 'gfa2':
         raise NotImplementedError('This feature is coming to soon. Use \'group\' for outfmt instead')
 
-    # tmpdir to save the interim fasta files
     tempdir = tempfile.mkdtemp()
     os.chmod(tempdir, 0o755)
     print(tempdir)
 
+    # parse the fasta file containing all seqeuences
     parse_fa = SeqIO.parse(fasta, 'fasta')
     rs = next(parse_fa)
     count = 0
@@ -98,19 +98,14 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
                 continue
             except StopIteration:  # end of file
                 break
-
         # get all alleles of a gene cluster, then run twopaco and graphdump
         rs = group_seq(parse_fa, gene, rs, tempdir)
         db_out = run_twopaco(tempdir, kmer)
-        gd_cmd = ['../bin/graphdump', '-f', outfmt, '-k', str(kmer), db_out]
-        graph_path = os.path.join(tmpdir, 'graphdump.txt')
-        with open(graph_path, 'w') as gd_out:
-            subprocess.call(gd_cmd, stdout=gd_out, stderr=subprocess.STDOUT)
+        graph_path = run_graphdump(db_out, kmer, outfmt, tempdir)
 
         with open(graph_path, 'r') as gfile:
             for lines in gfile.readlines():
                 junctions = lines.split(';')
-
 
         # TODO: Reformat the graphdump output into junction by genome, should be new function
         # TODO: delete all files in the temp folder
@@ -119,6 +114,14 @@ def find_junctions(fasta, kmer=35, outdir='junctions_out', outname='junctions.cs
         count += 1
         if count == 1:
             break
+
+
+def run_graphdump(db_out, kmer, outfmt, tempdir):
+    gd_cmd = ['../bin/graphdump', '-f', outfmt, '-k', str(kmer), db_out]
+    graph_path = os.path.join(tempdir, 'graphdump.txt')
+    with open(graph_path, 'w') as gd_out:
+        subprocess.call(gd_cmd, stdout=gd_out, stderr=subprocess.STDOUT)
+    return graph_path
 
 
 def run_twopaco(tempdir, kmer):
