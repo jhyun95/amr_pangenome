@@ -7,7 +7,7 @@ Created on Fri Mar 13 12:03:57 2020
 
 """
 
-import pangenome
-import patric
-import amr 
-#import mlgwas
+from amr_pangenome import *
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).parent.parent.absolute()
