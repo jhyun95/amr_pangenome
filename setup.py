@@ -2,7 +2,7 @@
 
 import setuptools
 
-#TODO: add install_requires=open('requirements.txt').read()
+# TODO: add install_requires=open('requirements.txt').read()
 setuptools.setup(
     name='AMR pangenome',
     version='0.1.0',

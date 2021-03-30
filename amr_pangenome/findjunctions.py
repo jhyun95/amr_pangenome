@@ -11,17 +11,20 @@ import sys
 sys.path.append('../')
 from amr_pangenome import ROOT_DIR
 
+
 class FindJunctions:
 
     # TODO: setup setters for the files, check if files exist
     def __init__(self, org, res_dir):
 
         # get all the required files
-        self.res_dir = res_dir
-        self.org = org
-        self.fa_file = os.path.join(self.res_dir, self.org + '_coding_nuc_nr.fna')
-        self.alleles_file = self.org + '_strain_by_allele.pickle.gz'
-        self.df_alleles = pd.read_pickle(os.path.join(self.res_dir, self.alleles_file))
+        self.__fna_suffix = '_coding_nuc_nr.fna'
+        self.__pickle_suffix = '_strain_by_allele.pickle.gz'
+        self._res_dir = res_dir
+        self._org = org
+        self._fa_file = os.path.join(self._res_dir, self._org + self.__fna_suffix)
+        self.alleles_file = self._org + self.__pickle_suffix
+        self.df_alleles = pd.read_pickle(os.path.join(self._res_dir, self.alleles_file))
 
         # drop all genes with only one allele
         allele_freq = {}
@@ -33,18 +36,43 @@ class FindJunctions:
             else:
                 allele_freq[gene] = 1
         # TODO: double check if this really gets rid of all alleles with one copy
-        self.single_allele = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
+        self.single_allele = [self._org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
-        self.tempdir = tempfile.mkdtemp()
-        os.chmod(self.tempdir, 0o755)
-        print(self.tempdir)
-
+        self._tempdir = tempfile.mkdtemp()
+        os.chmod(self._tempdir, 0o755)
+        print(self._tempdir)
 
         self.data_pos = []
         self.junction_row_idx = []
         self.fasta_col_idx = []
 
-    # TODO: gotta fix it so that its assigning the unique allele name to fasta
+    @property
+    def fa_file(self):
+        return self._fa_file
+
+    @property
+    def org(self):
+        return self._org
+
+    @property
+    def res_dir(self):
+        return self._res_dir
+
+    @org.setter
+    def org(self, org):
+        self._org = org
+        self._fa_file = os.path.join(self._res_dir, org + self.__fna_suffix)
+
+    @res_dir.setter
+    def res_dir(self, res_dir):
+        self._res_dir = res_dir
+        self._fa_file = os.path.join(res_dir, self._org, self.__fna_suffix)
+
+    @fa_file.setter
+    def fa_file(self, directory):
+        path, org_name = directory
+        self._fa_file = os.path.join(path, org_name + self.__fna_suffix)
+
     @staticmethod
     def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
         """
@@ -97,23 +125,23 @@ class FindJunctions:
             raise NotImplementedError('This feature is coming to soon. Use \'group\' for outfmt instead')
 
         # parse the fasta file containing all seqeuences
-        parse_fa = SeqIO.parse(self.fa_file, 'fasta')
+        parse_fa = SeqIO.parse(self._fa_file, 'fasta')
         rs = next(parse_fa)
         count = 0
 
         while rs:
             # get the next gene
             gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
-            if self.org + '_' + gene + 'A0' in self.single_allele:  # skip if gene with one allele
+            if self._org + '_' + gene + 'A0' in self.single_allele:  # skip if gene with one allele
                 try:
                     rs = next(parse_fa)
                     continue
                 except StopIteration:  # end of file
                     break
             # get all alleles of a gene cluster, then run twopaco and graphdump
-            rs = self.group_seq(parse_fa, gene, rs, self.tempdir)
-            db_out = self.run_twopaco(self.tempdir, kmer)
-            graph_path = self.run_graphdump(db_out, kmer, outfmt, self.tempdir)
+            rs = self.group_seq(parse_fa, gene, rs, self._tempdir)
+            db_out = self.run_twopaco(self._tempdir, kmer)
+            graph_path = self.run_graphdump(db_out, kmer, outfmt, self._tempdir)
 
             # with open(graph_path, 'r') as gfile:
             #     for lines in gfile.readlines():
@@ -209,6 +237,7 @@ class FindJunctions:
                 for junctions in line.split(';'):
                     genome, pos = junctions.split()
                     # this isn't right, this fa_list contains the allele names e.g. C0A21.fna
+                    # use allele table to find the fasta files that have that allele and update.
                     fasta = fa_list[genome]
                     fasta = '.'.join(fasta.split('.')[:-1])  # remove the file suffix
                     idx = ('J' + str(junction_no), fasta)
@@ -219,6 +248,6 @@ class FindJunctions:
 
 
 # main function to run the file
-fj = FindJunctions(org='CC8', res_dir='/home/saugat/Documents/CC8_fasta/CDhit_res')
-fj.find_junctions()
+# fj = FindJunctions(org='CC8', res_dir='/home/saugat/Documents/CC8_fasta/CDhit_res')
+# fj.find_junctions()
 # find_junctions(fa_file)
