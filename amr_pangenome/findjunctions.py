@@ -19,9 +19,9 @@ class FindJunctions:
         # get all the required files
         self.__fna_suffix = '_coding_nuc_nr.fna'
         self.__pickle_suffix = '_strain_by_allele.pickle.gz'
-        self.res_dir = res_dir
         self._org = org
-        self.fa_file = os.path.join(self._res_dir, self._org + self.__fna_suffix)
+        self.res_dir = res_dir
+        self.fa_file = (self._res_dir, self._org)
         self.alleles_file = self._org + self.__pickle_suffix
 
         # get genes with single alleles, these will be skipped during expensive junction search
