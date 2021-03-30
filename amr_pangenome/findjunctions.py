@@ -21,7 +21,7 @@ class FindJunctions:
         self.__pickle_suffix = '_strain_by_allele.pickle.gz'
         self._org = org
         self.res_dir = res_dir
-        self.fa_file = (self._res_dir, self._org)
+        self.fa_file = (self.res_dir, self._org)
         self.alleles_file = self._org + self.__pickle_suffix
 
         # get genes with single alleles, these will be skipped during expensive junction search
@@ -46,19 +46,19 @@ class FindJunctions:
 
     @property
     def res_dir(self):
-        return self._res_dir
+        return self.res_dir
 
     @org.setter
     def org(self, org):
         self._org = org
-        self._fa_file = os.path.join(self._res_dir, org + self.__fna_suffix)
+        self._fa_file = os.path.join(self.res_dir, org + self.__fna_suffix)
 
     @res_dir.setter
     def res_dir(self, res_dir):
         if not os.path.isdir(res_dir):
             raise NotADirectoryError(f'{res_dir} directory not found. Must pass directory containing '
                                      f'results from pangenome.py.')
-        self._res_dir = res_dir
+        self.res_dir = res_dir
         self._fa_file = os.path.join(res_dir, self._org, self.__fna_suffix)
 
     @fa_file.setter
@@ -70,7 +70,7 @@ class FindJunctions:
         self._fa_file = fa_path
 
     def get_single_alleles(self):
-        df_alleles = pd.read_pickle(os.path.join(self._res_dir, self.alleles_file))
+        df_alleles = pd.read_pickle(os.path.join(self.res_dir, self.alleles_file))
         # drop all genes with only one allele
         allele_freq = {}
         for idx in df_alleles.index:
@@ -269,6 +269,6 @@ class FindJunctions:
             return 'asdfasdf'
 
 # main function to run the file
-# fj = FindJunctions(org='CC8', res_dir='/home/saugat/Documents/CC8_fasta/CDhit_res')
+# fj = FindJunctions(org='CC8', res_dir_target='/home/saugat/Documents/CC8_fasta/CDhit_res')
 # fj.find_junctions()
 # find_junctions(fa_file)

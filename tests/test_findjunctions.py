@@ -1,16 +1,26 @@
 import pytest
 from amr_pangenome import findjunctions
-from unittest.mock import patch, mock_open
+from unittest import mock
+import os
 import sys
-sys.path.append('../amr_pangenome/')
+# sys.path.append('../amr_pangenome/')
 
 
-arg1, expected1 = ('CC8', '/home/saugat/Documents/CC8_fasta/CDhit_res'), 'CC8'
-findjunctions_init_params = [(arg1, expected1)]
-
+init_org_arg1, init_org_expected1 = ('CC8', '/path/to/file'), 'CC8'
+findjunctions_init_params = [(init_org_arg1, init_org_expected1)]
+res_dir_target = 'amr_pangenome.findjunctions.FindJunctions.res_dir'
+fa_file_target = 'amr_pangenome.findjunctions.FindJunctions.fa_file'
+single_allele_target = 'amr_pangenome.findjunctions.FindJunctions.get_single_alleles'
 
 @pytest.mark.parametrize("arg, expected", findjunctions_init_params)
-def test_findjunctions_init(arg, expected):
+@mock.patch(single_allele_target)
+@mock.patch(fa_file_target)
+@mock.patch(res_dir_target)
+def test_findjunctions_init_org(mock_isdir, mock_isfa, mock_single_allele,
+                                arg, expected):
+    mock_isdir.return_value = arg[1]
+    mock_isfa.return_value = os.path.join(arg[1], arg[0] + '.fa')
+    mock_single_allele.return_value = ['allele']
     fj = findjunctions.FindJunctions(*arg)
     assert fj.org == expected
 
@@ -18,6 +28,10 @@ def test_findjunctions_init(arg, expected):
 
 
 
+
+
+
+"next we have to find a way to mock the isdir check and and the isfile check"
 
 
 
