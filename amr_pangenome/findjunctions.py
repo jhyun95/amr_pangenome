@@ -14,7 +14,6 @@ from amr_pangenome import ROOT_DIR
 
 class FindJunctions:
 
-    # TODO: setup setters for the files, check if files exist
     def __init__(self, org, res_dir):
 
         # get all the required files
@@ -65,13 +64,19 @@ class FindJunctions:
 
     @res_dir.setter
     def res_dir(self, res_dir):
+        if not os.path.isdir(res_dir):
+            raise NotADirectoryError(f'{res_dir} directory not found. Must pass directory containing '
+                                     f'results from pangenome.py.}')
         self._res_dir = res_dir
         self._fa_file = os.path.join(res_dir, self._org, self.__fna_suffix)
 
     @fa_file.setter
     def fa_file(self, directory):
         path, org_name = directory
-        self._fa_file = os.path.join(path, org_name + self.__fna_suffix)
+        fa_path = os.path.join(path, org_name + self.__fna_suffix)
+        if not os.path.isfile(fa_path):
+            raise FileNotFoundError(f'{fa_path} file not found. Run pangenome.py to generate these files')
+        self._fa_file = fa_path
 
     @staticmethod
     def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
@@ -109,7 +114,7 @@ class FindJunctions:
                 return
         return ref_seq
 
-    def find_junctions(self, kmer=35, outdir='junctions_out', outname='junctions.csv',
+    def calc_junctions(self, kmer=35, outdir='junctions_out', outname='junctions.csv',
                        outfmt='group'):
 
         if not os.path.isdir(outdir):
