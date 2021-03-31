@@ -67,6 +67,49 @@ def test_findjunctions_init_single_alleles(patch_readpickle, patch_ospathjoin):
     assert mock_findjunction.single_alleles == ['Test_C21A0']
 
 
+@mock.patch('amr_pangenome.findjunctions.os.path.isdir')
+def test_calc_junctions_outfmt_valerror(os_path_isdir):
+    os_path_isdir.return_value = True
+    mock_findjunction = mock.Mock(findjunctions.FindJunctions)
+    with pytest.raises(ValueError):
+        findjunctions.FindJunctions.calc_junctions(mock_findjunction, outfmt='others')
+
+
+@mock.patch('amr_pangenome.findjunctions.os.path.isdir')
+def test_calc_junctions_outfmt_notimplemented(os_path_isdir):
+    os_path_isdir.return_value = True
+    mock_findjunction = mock.Mock(findjunctions.FindJunctions)
+    with pytest.raises(NotImplementedError):
+        findjunctions.FindJunctions.calc_junctions(mock_findjunction, outfmt='gfa2')
+
+# TODO: Its going to too tough to patch and mock fasta file. so just mock the class
+# TODO: fa_file and point to a test file.
+
+
+# TODO: set up the test fa_generator with the test fasta files for group_seq too
+@mock.patch('amr_pangenome.findjunctions.os.path.join')
+@mock.patch('amr_pangenome.findjunctions.os.listdir')
+def test_run_twopaco_process_error(os_path_listdir, os_path_join):
+    os_path_listdir.return_value = ['fa1', 'fa2']
+    os_path_join.return_value = '../bin/twopaco'
+    # should fail since 'fail' is passed instead of an int or str(int)
+    with pytest.raises(SystemExit) as pytest_wrapped_e:
+        findjunctions.FindJunctions.run_twopaco('tempdir', 'fail')
+    assert pytest_wrapped_e.type == SystemExit
+    assert pytest_wrapped_e.value.code == 1
+
+
+@mock.patch('amr_pangenome.findjunctions.subprocess.check_output')
+@mock.patch('amr_pangenome.findjunctions.os.listdir')
+def test_run_two_paco_cmd_line(os_path_listdir, subprocess_checkoutput):
+    os_path_listdir.return_value = ['fa1', 'fa2']
+    subprocess_checkoutput.return_value = 0
+    db_out = findjunctions.FindJunctions.run_twopaco('tempdir', 35)
+    assert db_out == 'tempdir/debrujin.bin'
+
+#
+
+
 """
 function description:
 1. read the graph_path
