@@ -101,13 +101,21 @@ def test_run_twopaco_process_error(os_path_listdir, os_path_join):
 
 @mock.patch('amr_pangenome.findjunctions.subprocess.check_output')
 @mock.patch('amr_pangenome.findjunctions.os.listdir')
-def test_run_two_paco_cmd_line(os_path_listdir, subprocess_checkoutput):
+def test_run_twopaco_cmd_line(os_path_listdir, subprocess_checkoutput):
     os_path_listdir.return_value = ['fa1', 'fa2']
     subprocess_checkoutput.return_value = 0
     db_out = findjunctions.FindJunctions.run_twopaco('tempdir', 35)
     assert db_out == 'tempdir/debrujin.bin'
 
-#
+
+@mock.patch('amr_pangenome.findjunctions.subprocess.call')
+@mock.patch('builtins.open', new_callable=mock.mock_open)
+def test_run_graphdump_cmd_line(mock_open, subprocess_call, ):
+    subprocess_call.return_value = 0
+    mock_open.read_data = ''
+    graph_path = findjunctions.FindJunctions.run_graphdump('db_out', 35, 'outfmt',
+                                                           'outdir')
+    assert graph_path == 'outdir/graphdump.txt'
 
 
 """
