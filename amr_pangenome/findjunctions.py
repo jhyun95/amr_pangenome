@@ -26,7 +26,8 @@ class FindJunctions:
 
         # get genes with single alleles, these will be skipped during expensive junction search
         self.single_alleles = None
-        self.get_single_alleles()
+        df_alleles = pd.read_pickle(os.path.join(self.res_dir, self.alleles_file))
+        self.get_single_alleles(df_alleles)
 
         self._tempdir = tempfile.mkdtemp()
         os.chmod(self._tempdir, 0o755)
@@ -66,8 +67,7 @@ class FindJunctions:
             raise FileNotFoundError(f'{fa_path} file not found. Run pangenome.py to generate these files')
         self._fa_file = fa_path
 
-    def get_single_alleles(self):
-        df_alleles = pd.read_pickle(os.path.join(self.res_dir, self.alleles_file))
+    def get_single_alleles(self, df_alleles):
         # drop all genes with only one allele
         allele_freq = {}
         for idx in df_alleles.index:

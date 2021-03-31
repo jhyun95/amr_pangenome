@@ -11,14 +11,16 @@ single_allele_target = 'amr_pangenome.findjunctions.FindJunctions.get_single_all
 
 
 @pytest.mark.parametrize("args, expected", [(init_args, 'CC8')])
+@mock.patch('amr_pangenome.findjunctions.pd.read_pickle')
 @mock.patch(single_allele_target)
 @mock.patch(fa_file_target)
 @mock.patch(res_dir_target)
-def test_findjunctions_init_org(mock_isdir, mock_isfa, mock_single_allele,
+def test_findjunctions_init_org(mock_isdir, mock_isfa, mock_single_allele, mock_read_pickle,
                                 args, expected):
     mock_isdir.return_value = args[1]
     mock_isfa.return_value = os.path.join(args[1], args[0] + '.fa')
     mock_single_allele.return_value = ['allele']
+    mock_read_pickle.return_value = ''
     fj = findjunctions.FindJunctions(*args)
     assert fj.org == expected
 
@@ -48,22 +50,16 @@ def test_findjunctions_init_resdir_exception(mock_isfa, mock_single_allele,
     with pytest.raises(NotADirectoryError):
         findjunctions.FindJunctions(*args)
 
-
-@mock.patch('amr_pangenome.findjunctions.os.path.join')
 @mock.patch('amr_pangenome.findjunctions.pd.read_pickle')
-def test_findjunctions_init_single_alleles(patch_readpickle, patch_ospathjoin):
+def test_findjunctions_init_single_alleles(mock_read_pickle):
     # mock FindJunction class to pass as 'self'
     mock_findjunction = mock.Mock(findjunctions.FindJunctions)
-    mock_findjunction.res_dir = ''
-    mock_findjunction.alleles_file = ''
     mock_findjunction.org = 'Test'
-    mock_findjunction.get_single_alleles = mock.Mock(return_value=None)
 
-    # patch the imported os and pandas function to overwrite them
-    patch_readpickle.return_value = pd.DataFrame(index=['Test_C11A1', 'Test_C11A2', 'Test_C21A0'])
-    patch_ospathjoin.return_value = ''
-
-    findjunctions.FindJunctions.get_single_alleles(mock_findjunction)
+    # patch the imported pandas function to overwrite them
+    mock_read_pickle.return_value = ''
+    df_alleles = pd.DataFrame(index=['Test_C11A1', 'Test_C11A2', 'Test_C21A0'])
+    findjunctions.FindJunctions.get_single_alleles(mock_findjunction, df_alleles)
     assert mock_findjunction.single_alleles == ['Test_C21A0']
 
 
@@ -82,11 +78,12 @@ def test_calc_junctions_outfmt_notimplemented(os_path_isdir):
     with pytest.raises(NotImplementedError):
         findjunctions.FindJunctions.calc_junctions(mock_findjunction, outfmt='gfa2')
 
+# TODO: DO THE THINGS BELOW FOR INTEGRATION TEST OF THE NEW FUNCTIONS
 # TODO: Its going to too tough to patch and mock fasta file. so just mock the class
 # TODO: fa_file and point to a test file.
-
-
 # TODO: set up the test fa_generator with the test fasta files for group_seq too
+
+
 @mock.patch('amr_pangenome.findjunctions.os.path.join')
 @mock.patch('amr_pangenome.findjunctions.os.listdir')
 def test_run_twopaco_process_error(os_path_listdir, os_path_join):
@@ -94,6 +91,7 @@ def test_run_twopaco_process_error(os_path_listdir, os_path_join):
     os_path_join.return_value = '../bin/twopaco'
     # should fail since 'fail' is passed instead of an int or str(int)
     with pytest.raises(SystemExit) as pytest_wrapped_e:
+        # noinspection PyTypeChecker
         findjunctions.FindJunctions.run_twopaco('tempdir', 'fail')
     assert pytest_wrapped_e.type == SystemExit
     assert pytest_wrapped_e.value.code == 1
