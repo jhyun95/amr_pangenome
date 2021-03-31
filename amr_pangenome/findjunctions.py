@@ -19,13 +19,13 @@ class FindJunctions:
         # get all the required files
         self.__fna_suffix = '_coding_nuc_nr.fna'
         self.__pickle_suffix = '_strain_by_allele.pickle.gz'
-        self._org = org
+        self.org = org
         self.res_dir = res_dir
-        self.fa_file = (self.res_dir, self._org)
+        self.fa_file = os.path.join(self.res_dir, self._org + self.__fna_suffix)
         self.alleles_file = self._org + self.__pickle_suffix
 
         # get genes with single alleles, these will be skipped during expensive junction search
-        self.single_allele = None
+        self.single_alleles = None
         self.get_single_alleles()
 
         self._tempdir = tempfile.mkdtemp()
@@ -46,25 +46,22 @@ class FindJunctions:
 
     @property
     def res_dir(self):
-        return self.res_dir
+        return self._res_dir
 
     @org.setter
     def org(self, org):
         self._org = org
-        self._fa_file = os.path.join(self.res_dir, org + self.__fna_suffix)
 
     @res_dir.setter
     def res_dir(self, res_dir):
         if not os.path.isdir(res_dir):
             raise NotADirectoryError(f'{res_dir} directory not found. Must pass directory containing '
                                      f'results from pangenome.py.')
-        self.res_dir = res_dir
+        self._res_dir = res_dir
         self._fa_file = os.path.join(res_dir, self._org, self.__fna_suffix)
 
     @fa_file.setter
-    def fa_file(self, directory):
-        path, org_name = directory
-        fa_path = os.path.join(path, org_name + self.__fna_suffix)
+    def fa_file(self, fa_path):
         if not os.path.isfile(fa_path):
             raise FileNotFoundError(f'{fa_path} file not found. Run pangenome.py to generate these files')
         self._fa_file = fa_path
@@ -81,7 +78,7 @@ class FindJunctions:
             else:
                 allele_freq[gene] = 1
         # TODO: double check if this really gets rid of all alleles with one copy
-        self.single_allele = [self._org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
+        self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
     def calc_junctions(self, kmer=35, outdir='junctions_out', outname='junctions.csv',
                        outfmt='group'):
@@ -113,14 +110,14 @@ class FindJunctions:
             raise NotImplementedError('This feature is coming to soon. Use \'group\' for outfmt instead')
 
         # parse the fasta file containing all seqeuences
-        parse_fa = SeqIO.parse(self._fa_file, 'fasta')
+        parse_fa = SeqIO.parse(self.fa_file, 'fasta')
         rs = next(parse_fa)
         count = 0
 
         while rs:
             # get the next gene
             gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
-            if self._org + '_' + gene + 'A0' in self.single_allele:  # skip if gene with one allele
+            if self._org + '_' + gene + 'A0' in self.single_alleles:  # skip if gene with one allele
                 try:
                     rs = next(parse_fa)
                     continue

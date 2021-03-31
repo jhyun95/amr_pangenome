@@ -2,7 +2,7 @@ from amr_pangenome import findjunctions
 import pytest
 from unittest import mock
 import os
-import pandas
+import pandas as pd
 
 init_args = ('CC8', '/path/to/file')
 res_dir_target = 'amr_pangenome.findjunctions.FindJunctions.res_dir'
@@ -48,11 +48,23 @@ def test_findjunctions_init_resdir_exception(mock_isfa, mock_single_allele,
     with pytest.raises(NotADirectoryError):
         findjunctions.FindJunctions(*args)
 
-#make fake df_alleles and pass that with mock
 
-# @mock.patch(fa_file_target)
-# def test_findjunctions_init_single_alleles():
+@mock.patch('amr_pangenome.findjunctions.os.path.join')
+@mock.patch('amr_pangenome.findjunctions.pd.read_pickle')
+def test_findjunctions_init_single_alleles(patch_readpickle, patch_ospathjoin):
+    # mock FindJunction class to pass as 'self'
+    mock_findjunction = mock.Mock(findjunctions.FindJunctions)
+    mock_findjunction.res_dir = ''
+    mock_findjunction.alleles_file = ''
+    mock_findjunction.org = 'Test'
+    mock_findjunction.get_single_alleles = mock.Mock(return_value=None)
 
+    # patch the imported os and pandas function to overwrite them
+    patch_readpickle.return_value = pd.DataFrame(index=['Test_C11A1', 'Test_C11A2', 'Test_C21A0'])
+    patch_ospathjoin.return_value = ''
+
+    findjunctions.FindJunctions.get_single_alleles(mock_findjunction)
+    assert mock_findjunction.single_alleles == ['Test_C21A0']
 
 
 """
