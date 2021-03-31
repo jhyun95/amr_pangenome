@@ -1,49 +1,58 @@
-import pytest
 from amr_pangenome import findjunctions
+import pytest
 from unittest import mock
 import os
-import sys
-# sys.path.append('../amr_pangenome/')
+import pandas
 
-
-init_org_arg1, init_org_expected1 = ('CC8', '/path/to/file'), 'CC8'
-findjunctions_init_params = [(init_org_arg1, init_org_expected1)]
+init_args = ('CC8', '/path/to/file')
 res_dir_target = 'amr_pangenome.findjunctions.FindJunctions.res_dir'
 fa_file_target = 'amr_pangenome.findjunctions.FindJunctions.fa_file'
 single_allele_target = 'amr_pangenome.findjunctions.FindJunctions.get_single_alleles'
 
-@pytest.mark.parametrize("arg, expected", findjunctions_init_params)
+
+@pytest.mark.parametrize("args, expected", [(init_args, 'CC8')])
 @mock.patch(single_allele_target)
 @mock.patch(fa_file_target)
 @mock.patch(res_dir_target)
 def test_findjunctions_init_org(mock_isdir, mock_isfa, mock_single_allele,
-                                arg, expected):
-    mock_isdir.return_value = arg[1]
-    mock_isfa.return_value = os.path.join(arg[1], arg[0] + '.fa')
+                                args, expected):
+    mock_isdir.return_value = args[1]
+    mock_isfa.return_value = os.path.join(args[1], args[0] + '.fa')
     mock_single_allele.return_value = ['allele']
-    fj = findjunctions.FindJunctions(*arg)
+    fj = findjunctions.FindJunctions(*args)
     assert fj.org == expected
 
 
+expected_fa = os.path.join(init_args[1], init_args[0] + '.fa')
 
 
+# test that the proper exceptions are raised
+@pytest.mark.parametrize("args, expected", [(init_args, expected_fa)])
+@mock.patch(single_allele_target)
+@mock.patch(res_dir_target)
+def test_findjunctions_init_fasta_exception(mock_isdir, mock_single_allele,
+                                            args, expected):
+    mock_isdir.return_value = True
+    mock_single_allele.return_value = ['allele']
+    with pytest.raises(FileNotFoundError):
+        findjunctions.FindJunctions(*args)
 
 
+@pytest.mark.parametrize("args, expected", [(init_args, expected_fa)])
+@mock.patch(single_allele_target)
+@mock.patch(fa_file_target)
+def test_findjunctions_init_resdir_exception(mock_isfa, mock_single_allele,
+                                             args, expected):
+    mock_isfa.return_value = True
+    mock_single_allele.return_value = ['allele']
+    with pytest.raises(NotADirectoryError):
+        findjunctions.FindJunctions(*args)
 
+#make fake df_alleles and pass that with mock
 
-"next we have to find a way to mock the isdir check and and the isfile check"
+# @mock.patch(fa_file_target)
+# def test_findjunctions_init_single_alleles():
 
-
-
-
-# makesparsematrix_readline_params = [('output.txt', 'asdfasdf')]
-# @pytest.mark.parametrize('_input, expected', makesparsematrix_readline_params)
-# @patch('amr_pangenome.findjunctions.FindJunctions.get_junction_data.open',
-#        new_callable=mock_open(), create=True)
-# def test_makesparsematrix_readline(open_mock, _input, expected):
-#     open_mock.read_data = _input
-#     res = findjunctions.FindJunctions.get_junction_data('output.txt')
-#     assert res == expected
 
 
 """
