@@ -10,6 +10,17 @@ fa_file_target = 'amr_pangenome.findjunctions.FindJunctions.fa_file'
 single_allele_target = 'amr_pangenome.findjunctions.FindJunctions.get_single_alleles'
 
 
+@pytest.fixture(scope='function')
+def mock_findjunction():
+    mock_findjunction = mock.Mock(findjunctions.FindJunctions)
+    mock_findjunction.res_dir = '/dev/null'
+    mock_findjunction.fa_file = 'Test.fna'
+    mock_findjunction.org = 'Test'
+    mock_findjunction.pos_data = []
+    mock_findjunction.junction_row_idx = []
+    return mock_findjunction
+
+
 @pytest.mark.parametrize("args, expected", [(init_args, 'CC8')])
 @mock.patch('amr_pangenome.findjunctions.pd.read_pickle')
 @mock.patch(single_allele_target)
@@ -50,12 +61,9 @@ def test_findjunctions_init_resdir_exception(mock_isfa, mock_single_allele,
     with pytest.raises(NotADirectoryError):
         findjunctions.FindJunctions(*args)
 
-@mock.patch('amr_pangenome.findjunctions.pd.read_pickle')
-def test_findjunctions_init_single_alleles(mock_read_pickle):
-    # mock FindJunction class to pass as 'self'
-    mock_findjunction = mock.Mock(findjunctions.FindJunctions)
-    mock_findjunction.org = 'Test'
 
+@mock.patch('amr_pangenome.findjunctions.pd.read_pickle')
+def test_findjunctions_init_single_alleles(mock_read_pickle, mock_findjunction):
     # patch the imported pandas function to overwrite them
     mock_read_pickle.return_value = ''
     df_alleles = pd.DataFrame(index=['Test_C11A1', 'Test_C11A2', 'Test_C21A0'])
@@ -64,9 +72,8 @@ def test_findjunctions_init_single_alleles(mock_read_pickle):
 
 
 @mock.patch('amr_pangenome.findjunctions.os.path.isdir')
-def test_calc_junctions_outfmt_valerror(os_path_isdir):
+def test_calc_junctions_outfmt_valuerror(os_path_isdir, mock_findjunction):
     os_path_isdir.return_value = True
-    mock_findjunction = mock.Mock(findjunctions.FindJunctions)
     with pytest.raises(ValueError):
         findjunctions.FindJunctions.calc_junctions(mock_findjunction, outfmt='others')
 
@@ -77,11 +84,6 @@ def test_calc_junctions_outfmt_notimplemented(os_path_isdir):
     mock_findjunction = mock.Mock(findjunctions.FindJunctions)
     with pytest.raises(NotImplementedError):
         findjunctions.FindJunctions.calc_junctions(mock_findjunction, outfmt='gfa2')
-
-# TODO: DO THE THINGS BELOW FOR INTEGRATION TEST OF THE NEW FUNCTIONS
-# TODO: Its going to too tough to patch and mock fasta file. so just mock the class
-# TODO: fa_file and point to a test file.
-# TODO: set up the test fa_generator with the test fasta files for group_seq too
 
 
 @mock.patch('amr_pangenome.findjunctions.os.path.join')
@@ -116,13 +118,19 @@ def test_run_graphdump_cmd_line(mock_open, subprocess_call, ):
     assert graph_path == 'outdir/graphdump.txt'
 
 
-"""
-function description:
-1. read the graph_path
-2. split lines based on ';'
-3. assign unique names to junctions
-4. return a coo formatted sparse matrix
-"""
+def test_get_junction_data(mock_findjunction):
+    fa_list = ['fa0.fna', 'fa1.fna', 'fa2.fna']
+    print(mock_findjunction.pos_data)
+    findjunctions.FindJunctions.get_junction_data(mock_findjunction, 'test_data/test_graphdump_output.txt',
+                                                  fa_list)
+    assert mock_findjunction.pos_data == ['31', '31', '31', '50', '50']
+    assert mock_findjunction.junction_row_idx == ['fa0J0', 'fa1J0', 'fa2J0', 'fa1J1', 'fa2J1']
+
+
+# TODO: DO THE THINGS BELOW FOR INTEGRATION TEST OF THE NEW FUNCTIONS
+# TODO: Its going to too tough to patch and mock fasta file. so just mock the class
+# TODO: fa_file and point to a test file.
+# TODO: set up the test fa_generator with the test fasta files for group_seq too
 
 """
 COO format 

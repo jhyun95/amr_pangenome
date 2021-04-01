@@ -33,25 +33,21 @@ class FindJunctions:
         os.chmod(self._tempdir, 0o755)
         print(self._tempdir)
 
-        self.data_pos = []
-        self.junction_row_idx = []
-        self.fasta_col_idx = []
-
-    @property
-    def fa_file(self):
-        return self._fa_file
+        self.pos_data = []  # nucleotide position data for  junctions
+        self.junction_row_idx = []  # junction names
+        # self.fasta_col_idx = []
 
     @property
     def org(self):
         return self._org
 
-    @property
-    def res_dir(self):
-        return self._res_dir
-
     @org.setter
     def org(self, org):
         self._org = org
+
+    @property
+    def res_dir(self):
+        return self._res_dir
 
     @res_dir.setter
     def res_dir(self, res_dir):
@@ -60,6 +56,10 @@ class FindJunctions:
                                      f'results from pangenome.py.')
         self._res_dir = res_dir
         self._fa_file = os.path.join(res_dir, self._org, self.__fna_suffix)
+
+    @property
+    def fa_file(self):
+        return self._fa_file
 
     @fa_file.setter
     def fa_file(self, fa_path):
@@ -77,7 +77,6 @@ class FindJunctions:
                 allele_freq[gene] = allele_freq[gene] + 1
             else:
                 allele_freq[gene] = 1
-        # TODO: double check if this really gets rid of all alleles with one copy
         self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
     def calc_junctions(self, kmer=35, outdir='junctions_out', outname='junctions.csv',
@@ -248,22 +247,22 @@ class FindJunctions:
         -------
 
         """
-        with open(graphdump_out, 'r') as test:
-            junction_no = 0
-            coo_data = []
-            for line in test.readline():
-                # each line represents a unique junction
-                for junctions in line.split(';'):
-                    genome, pos = junctions.split()
-                    # this isn't right, this fa_list contains the allele names e.g. C0A21.fna
-                    # use allele table to find the fasta files that have that allele and update.
-                    fasta = fa_list[genome]
-                    fasta = '.'.join(fasta.split('.')[:-1])  # remove the file suffix
-                    idx = ('J' + str(junction_no), fasta)
-                    coo_data.append([pos, idx])
+
+        fa_list = [os.path.splitext(i)[0] for i in fa_list]
+        junction_no = 0
+
+        with open(graphdump_out, 'r') as graph_in:
+            for line in graph_in.readlines():
+                # each line represents a unique junction and the allele
+                for junction in line.split(';'):
+                    allele, pos = junction.split()
+                    junction_id = fa_list[int(allele)] + 'J' + str(junction_no)
+                    self.pos_data.append(pos)
+                    self.junction_row_idx.append(junction_id)
                 junction_no += 1
 
-            return 'asdfasdf'
+
+
 
 # main function to run the file
 # fj = FindJunctions(org='CC8', res_dir_target='/home/saugat/Documents/CC8_fasta/CDhit_res')
