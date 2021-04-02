@@ -1,4 +1,4 @@
-from amr_pangenome import findjunctions
+from amr_pangenome import findjunctions, ROOT_DIR
 import pytest
 from unittest import mock
 import os
@@ -96,11 +96,14 @@ def test_calc_junctions_outfmt_notimplemented(os_path_isdir):
         findjunctions.FindJunctions.calc_junctions(mock_findjunction, outfmt='gfa2')
 
 
+two_paco_dir = os.path.join(ROOT_DIR, 'bin/twopaco')
+
+
 @mock.patch('amr_pangenome.findjunctions.os.path.join')
 @mock.patch('amr_pangenome.findjunctions.os.listdir')
 def test_run_twopaco_process_error(os_path_listdir, os_path_join):
     os_path_listdir.return_value = ['fa1', 'fa2']
-    os_path_join.return_value = '../bin/twopaco'
+    os_path_join.return_value = two_paco_dir  # path to compiled two_paco
     # should fail since 'fail' is passed instead of an int or str(int)
     with pytest.raises(SystemExit) as pytest_wrapped_e:
         # noinspection PyTypeChecker
@@ -128,7 +131,7 @@ def test_run_graphdump_cmd_line(mock_open, subprocess_call):
 
 def test_get_junction_data():
     fa_list = ['fa0.fna', 'fa1.fna', 'fa2.fna']
-    output = 'test_data/test_graphdump_output.txt'
+    output = os.path.join(ROOT_DIR, 'tests/test_data/test_graphdump_output.txt')
     junction_data, pos_data = findjunctions.FindJunctions.get_junction_data(output, fa_list)
     assert pos_data == ['31', '31', '31', '50', '50']
     assert junction_data == ['fa0J0', 'fa1J0', 'fa2J0', 'fa1J1', 'fa2J1']
@@ -160,8 +163,6 @@ def test_write_coo_file(mock_open, junctions, positions):
     mocked_calls = [mock.call('A0J0,0\n'), mock.call('A1J0,0\n'), mock.call('A2J0,3\n'),
                     mock.call('A1J1,5\n'), mock.call('A2J1,5\n')]
     handle.write.assert_has_calls(mocked_calls)
-
-
 
 
 """

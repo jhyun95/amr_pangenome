@@ -16,13 +16,12 @@ from amr_pangenome import ROOT_DIR  # noqa
 class FindJunctions:
 
     def __init__(self, org, res_dir):
+        self.__fna_suffix = '_coding_nuc_nr.fna'
+        self.__pickle_suffix = '_strain_by_allele.pickle.gz'
 
         # get all the required files
         self.org = org
         self.res_dir = res_dir
-
-        self.__fna_suffix = '_coding_nuc_nr.fna'
-        self.__pickle_suffix = '_strain_by_allele.pickle.gz'
         self.fa_file = os.path.join(self.res_dir, self._org + self.__fna_suffix)
         self.alleles_file = self._org + self.__pickle_suffix
 
@@ -84,7 +83,7 @@ class FindJunctions:
         self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
     def calc_junctions(self, kmer=35, outdir='junctions_out', outname='junctions.csv',
-                       outfmt='group'):
+                       outfmt='group', force=False):
         """
         Workhorse of the FindJunction class. Its the main method to calculate all the junctions between
         the different alleles from the genes.The calculated junctions are written into the output file
@@ -99,7 +98,17 @@ class FindJunctions:
             name of the output file
         outfmt: str, {group, gfa2}, default 'group'
             output format for the junctions. only group and gfa2 formats are supported
+        force: bool, default False
+            whether to overwrite the existing output file. If output file already exists and False is passed
+            a FileExistsError will be passed.
         """
+
+        coo_out = os.path.join(outdir, 'coo.txt')
+        if os.path.isfile(coo_out):
+            if force:
+                os.remove(coo_out)
+            else:
+                raise FileExistsError(f'{coo_out} exists, pass force=True to overwrite.')
 
         if not os.path.isdir(outdir):
             os.mkdir(outdir)
@@ -127,7 +136,7 @@ class FindJunctions:
                     continue
                 except StopIteration:  # end of file
                     break
-            with tempfile.TemporaryDirectory as tmp_dir:
+            with tempfile.TemporaryDirectory() as tmp_dir:
                 fna_temp = os.path.join(tmp_dir, 'alleles_fna')
                 os.mkdir(fna_temp)
                 # os.chmod(self._tempdir, 0o755)
@@ -142,19 +151,18 @@ class FindJunctions:
                 graph_path = self.run_graphdump(db_out, kmer, outfmt, tmp_dir)
 
                 # gather junctions for the gene junctions and write them to file
-                coo_out = os.path.join(tmp_dir, 'coo.txt')
-                junction_list, pos_list = get_junction_data(graph_path, fa_list)
+                junction_list, pos_list = self.get_junction_data(graph_path, fa_list)
                 if len(junction_list) != len(pos_list):
                     raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
-                write_coo_file(junction_list, pos_list, coo_out)
+                self.write_coo_file(junction_list, pos_list, coo_out)
 
             # for testing purposes only
             count += 1
-            if count == 1:
+            if count >= 1:
                 break
 
     # TODO: gene by allele fasta file
-
+    # TODO: Make sure to include single allele genes
     @staticmethod
     def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
         """
@@ -191,8 +199,9 @@ class FindJunctions:
                 return
         return ref_seq
 
+    # TODO: change outdir to outpath
     @staticmethod
-    def run_twopaco(fpaths, kmer, tempdir):
+    def run_twopaco(fpaths, kmer, outdir):
         """
 
         Parameters
@@ -201,16 +210,17 @@ class FindJunctions:
             list of paths to fasta files
         kmer: int
             size of the kmers to be used for twopaco junction finder
-
+        outdir: str or path.PATH
+            path to the output directory where the output will be stored
         Returns
         -------
         db_out: str
             path to the file of containing the output of twopaco
         """
 
-        db_out = os.path.join(tempdir, 'debrujin.bin')
+        db_out = os.path.join(outdir, 'debrujin.bin')
         two_paco_dir = os.path.join(ROOT_DIR, 'bin/twopaco')
-        tp_cmd = [two_paco_dir, '-f', str(kmer), '-o', db_out]
+        tp_cmd = [two_paco_dir, '-f', str(kmer), '-o', db_out, '-t', '8']
         tp_cmd.extend(fpaths)
         try:
             subprocess.check_output(tp_cmd, stderr=subprocess.STDOUT)
@@ -273,9 +283,9 @@ class FindJunctions:
         with open(graphdump_out, 'r') as graph_in:
             for line in graph_in.readlines():
                 # each line represents a unique junction and the allele
-                for junction in line.split(';'):
+                for junction in line.split(';')[:-1]:  # last entry is \n
                     allele, pos = junction.split()
-                    junction_id = fa_list[int(allele)] + 'J' + str(junction_no)
+                    junction_id = fa_list[int(allele.strip())] + 'J' + str(junction_no)
                     pos_data.append(pos)
                     junction_row_idx.append(junction_id)
                 junction_no += 1
