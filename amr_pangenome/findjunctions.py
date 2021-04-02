@@ -7,6 +7,7 @@ from Bio import SeqIO
 import re
 import tempfile
 import sys
+from scipy import sparse
 
 sys.path.append('../')
 from amr_pangenome import ROOT_DIR  # noqa
@@ -17,25 +18,28 @@ class FindJunctions:
     def __init__(self, org, res_dir):
 
         # get all the required files
-        self.__fna_suffix = '_coding_nuc_nr.fna'
-        self.__pickle_suffix = '_strain_by_allele.pickle.gz'
         self.org = org
         self.res_dir = res_dir
+
+        self.__fna_suffix = '_coding_nuc_nr.fna'
+        self.__pickle_suffix = '_strain_by_allele.pickle.gz'
         self.fa_file = os.path.join(self.res_dir, self._org + self.__fna_suffix)
         self.alleles_file = self._org + self.__pickle_suffix
 
-        # get genes with single alleles, these will be skipped during expensive junction search
+        # genes with single alleles are skipped during expensive junction search
         self.single_alleles = None
         df_alleles = pd.read_pickle(os.path.join(self.res_dir, self.alleles_file))
         self.get_single_alleles(df_alleles)
 
-        self._tempdir = tempfile.mkdtemp()
-        os.chmod(self._tempdir, 0o755)
-        print(self._tempdir)
+        # self._tempdir = tempfile.mkdtemp()
+        # self._fna_temp = os.path.join(self._tempdir, 'alleles_fna')
+        # os.mkdir(self._fna_temp)
+        # os.chmod(self._tempdir, 0o755)
+        # os.chmod(self._fna_temp, 0o755)
+        # print(self._tempdir)
 
         self.pos_data = []  # nucleotide position data for  junctions
         self.junction_row_idx = []  # junction names
-        # self.fasta_col_idx = []
 
     @property
     def org(self):
@@ -82,8 +86,9 @@ class FindJunctions:
     def calc_junctions(self, kmer=35, outdir='junctions_out', outname='junctions.csv',
                        outfmt='group'):
         """
-        Work horse of the FindJunction class. Its the main method to calculate all the junctions between
-        the different alleles from the genes.The calculated junctions are written into the output file.
+        Workhorse of the FindJunction class. Its the main method to calculate all the junctions between
+        the different alleles from the genes.The calculated junctions are written into the output file
+        with format unique_junction_name, allele_nucleotide_position.
         Parameters
         ----------
         kmer: int, default 25
@@ -122,20 +127,33 @@ class FindJunctions:
                     continue
                 except StopIteration:  # end of file
                     break
-            # get all alleles of a gene cluster, then run twopaco and graphdump
-            rs = self.group_seq(parse_fa, gene, rs, self._tempdir)
-            db_out = self.run_twopaco(self._tempdir, kmer)
-            # graph_path = self.run_graphdump(db_out, kmer, outfmt, self._tempdir)
-            #
-            # # with open(graph_path, 'r') as gfile:
-            # #     for lines in gfile.readlines():
-            # #         junctions = lines.split(';')
+            with tempfile.TemporaryDirectory as tmp_dir:
+                fna_temp = os.path.join(tmp_dir, 'alleles_fna')
+                os.mkdir(fna_temp)
+                # os.chmod(self._tempdir, 0o755)
+                # os.chmod(self._fna_temp, 0o755)
+                # print(tmp_dir)
 
-            # TODO: delete all files in the temp folder
+                # get all alleles of a gene cluster, then run twopaco and graphdump
+                rs = self.group_seq(parse_fa, gene, rs, fna_temp)
+                fa_list = os.listdir(fna_temp)
+                fpaths = [os.path.join(fna_temp, i) for i in fa_list]
+                db_out = self.run_twopaco(fpaths, kmer, tmp_dir)
+                graph_path = self.run_graphdump(db_out, kmer, outfmt, tmp_dir)
+
+                # gather junctions for the gene junctions and write them to file
+                coo_out = os.path.join(tmp_dir, 'coo.txt')
+                junction_list, pos_list = get_junction_data(graph_path, fa_list)
+                if len(junction_list) != len(pos_list):
+                    raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
+                write_coo_file(junction_list, pos_list, coo_out)
+
             # for testing purposes only
             count += 1
             if count == 1:
                 break
+
+    # TODO: gene by allele fasta file
 
     @staticmethod
     def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
@@ -174,13 +192,13 @@ class FindJunctions:
         return ref_seq
 
     @staticmethod
-    def run_twopaco(tempdir, kmer):
+    def run_twopaco(fpaths, kmer, tempdir):
         """
 
         Parameters
         ----------
-        tempdir: str
-            temporary directory where all the fasta files are stored
+        fpaths: list
+            list of paths to fasta files
         kmer: int
             size of the kmers to be used for twopaco junction finder
 
@@ -189,8 +207,7 @@ class FindJunctions:
         db_out: str
             path to the file of containing the output of twopaco
         """
-        fa_list = os.listdir(tempdir)
-        fpaths = [os.path.join(tempdir, i) for i in fa_list]
+
         db_out = os.path.join(tempdir, 'debrujin.bin')
         two_paco_dir = os.path.join(ROOT_DIR, 'bin/twopaco')
         tp_cmd = [two_paco_dir, '-f', str(kmer), '-o', db_out]
@@ -233,9 +250,10 @@ class FindJunctions:
             subprocess.call(gd_cmd, stdout=gd_out, stderr=subprocess.STDOUT)
         return graph_path
 
-    def get_junction_data(self, graphdump_out, fa_list):
+    @staticmethod
+    def get_junction_data(graphdump_out, fa_list):
         """
-        Read the output file of graphdump, and convert it to COO formatted sparse data.
+        Read the output file from graphdump, and convert it to COO formatted sparse data.
         Parameters
         ----------
         graphdump_out: str, pathlib.Path
@@ -250,21 +268,33 @@ class FindJunctions:
 
         fa_list = [os.path.splitext(i)[0] for i in fa_list]
         junction_no = 0
-
+        pos_data = []
+        junction_row_idx = []
         with open(graphdump_out, 'r') as graph_in:
             for line in graph_in.readlines():
                 # each line represents a unique junction and the allele
                 for junction in line.split(';'):
                     allele, pos = junction.split()
                     junction_id = fa_list[int(allele)] + 'J' + str(junction_no)
-                    self.pos_data.append(pos)
-                    self.junction_row_idx.append(junction_id)
+                    pos_data.append(pos)
+                    junction_row_idx.append(junction_id)
                 junction_no += 1
 
+        return junction_row_idx, pos_data
+
+    def make_junction_strain_df(self, df_alleles):
+        df_junction_strain = pd.DataFrame(index=self.junction_row_idx, columns=df_alleles.columns,
+                                          dtype=int)
+
+        return df_junction_strain
 
 
+    @staticmethod
+    def write_coo_file(junction_list, pos_list, outfile):
+        """
+        Write the junction names and nucleotide positions into the outfile
+        """
+        with open(outfile, 'a+') as out:
+            for jct, pos in zip(junction_list, pos_list):
+                out.write(f'{jct},{pos}\n')
 
-# main function to run the file
-# fj = FindJunctions(org='CC8', res_dir_target='/home/saugat/Documents/CC8_fasta/CDhit_res')
-# fj.find_junctions()
-# find_junctions(fa_file)

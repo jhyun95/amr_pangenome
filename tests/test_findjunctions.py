@@ -3,6 +3,8 @@ import pytest
 from unittest import mock
 import os
 import pandas as pd
+from scipy import sparse
+
 
 init_args = ('CC8', '/path/to/file')
 res_dir_target = 'amr_pangenome.findjunctions.FindJunctions.res_dir'
@@ -16,9 +18,17 @@ def mock_findjunction():
     mock_findjunction.res_dir = '/dev/null'
     mock_findjunction.fa_file = 'Test.fna'
     mock_findjunction.org = 'Test'
-    mock_findjunction.pos_data = []
-    mock_findjunction.junction_row_idx = []
     return mock_findjunction
+
+
+@pytest.fixture(scope='module')
+def junctions():
+    return ['A0J0', 'A1J0', 'A2J0', 'A1J1', 'A2J1']
+
+
+@pytest.fixture
+def positions():
+    return [0, 0, 3, 5, 5, 29, 32]
 
 
 @pytest.mark.parametrize("args, expected", [(init_args, 'CC8')])
@@ -94,23 +104,21 @@ def test_run_twopaco_process_error(os_path_listdir, os_path_join):
     # should fail since 'fail' is passed instead of an int or str(int)
     with pytest.raises(SystemExit) as pytest_wrapped_e:
         # noinspection PyTypeChecker
-        findjunctions.FindJunctions.run_twopaco('tempdir', 'fail')
+        findjunctions.FindJunctions.run_twopaco(['/dev/null/'], 'fail', 'tempdir')
     assert pytest_wrapped_e.type == SystemExit
     assert pytest_wrapped_e.value.code == 1
 
 
 @mock.patch('amr_pangenome.findjunctions.subprocess.check_output')
-@mock.patch('amr_pangenome.findjunctions.os.listdir')
-def test_run_twopaco_cmd_line(os_path_listdir, subprocess_checkoutput):
-    os_path_listdir.return_value = ['fa1', 'fa2']
+def test_run_twopaco_cmd_line(subprocess_checkoutput):
     subprocess_checkoutput.return_value = 0
-    db_out = findjunctions.FindJunctions.run_twopaco('tempdir', 35)
+    db_out = findjunctions.FindJunctions.run_twopaco(['/dev/null'], 35, 'tempdir')
     assert db_out == 'tempdir/debrujin.bin'
 
 
 @mock.patch('amr_pangenome.findjunctions.subprocess.call')
 @mock.patch('builtins.open', new_callable=mock.mock_open)
-def test_run_graphdump_cmd_line(mock_open, subprocess_call, ):
+def test_run_graphdump_cmd_line(mock_open, subprocess_call):
     subprocess_call.return_value = 0
     mock_open.read_data = ''
     graph_path = findjunctions.FindJunctions.run_graphdump('db_out', 35, 'outfmt',
@@ -118,20 +126,47 @@ def test_run_graphdump_cmd_line(mock_open, subprocess_call, ):
     assert graph_path == 'outdir/graphdump.txt'
 
 
-def test_get_junction_data(mock_findjunction):
+def test_get_junction_data():
     fa_list = ['fa0.fna', 'fa1.fna', 'fa2.fna']
-    print(mock_findjunction.pos_data)
-    findjunctions.FindJunctions.get_junction_data(mock_findjunction, 'test_data/test_graphdump_output.txt',
-                                                  fa_list)
-    assert mock_findjunction.pos_data == ['31', '31', '31', '50', '50']
-    assert mock_findjunction.junction_row_idx == ['fa0J0', 'fa1J0', 'fa2J0', 'fa1J1', 'fa2J1']
+    output = 'test_data/test_graphdump_output.txt'
+    junction_data, pos_data = findjunctions.FindJunctions.get_junction_data(output, fa_list)
+    assert pos_data == ['31', '31', '31', '50', '50']
+    assert junction_data == ['fa0J0', 'fa1J0', 'fa2J0', 'fa1J1', 'fa2J1']
 
 
 # TODO: DO THE THINGS BELOW FOR INTEGRATION TEST OF THE NEW FUNCTIONS
 # TODO: Its going to too tough to patch and mock fasta file. so just mock the class
 # TODO: fa_file and point to a test file.
 # TODO: set up the test fa_generator with the test fasta files for group_seq too
+@pytest.mark.skip
+def test_make_strain_junction_df(mock_findjunction):
+    array = pd.array([[0, 1, 0], [1, 0, 1], [1, 1, 1]])
+    df_alleles = pd.DataFrame(array, index=['A0', 'A1', 'A2'],
+                              columns=['fasta1', 'fasta2', 'fasta3'])
+    mock_findjunction.junction_row_idx = junctions
+    mock_findjunction.pos_data = positions
+    res = findjunctions.FindJunctions.make_junction_strain_df(mock_findjunction, df_alleles)
+    assert res.dtype == int
+    assert res.index == junctions
+    assert res.columns == df_alleles.columns
 
+
+@mock.patch('builtins.open', new_callable=mock.mock_open)
+def test_write_coo_file(mock_open, junctions, positions):
+    findjunctions.FindJunctions.write_coo_file(junctions, positions, '/dev/null/text.txt')
+    mock_open.assert_called_with('/dev/null/text.txt', 'a+')
+
+    handle = mock_open()
+    mocked_calls = [mock.call('A0J0,0\n'), mock.call('A1J0,0\n'), mock.call('A2J0,3\n'),
+                    mock.call('A1J1,5\n'), mock.call('A2J1,5\n')]
+    handle.write.assert_has_calls(mocked_calls)
+
+
+
+
+"""
+creates a sparse junction by fasta matrix from junction and position data.
+"""
 """
 COO format 
 (data, (i, j)) where data, i and j are iterables containing data, row index and
@@ -144,4 +179,6 @@ column index is the name for the fasta file
 
 we don't have to determine the name and the column index at first,
  the create_sparse_rows should be 
+ 
+ should throw error if not match for the fasta is found
 """
