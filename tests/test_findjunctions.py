@@ -11,6 +11,7 @@ res_dir_target = 'amr_pangenome.findjunctions.FindJunctions.res_dir'
 fa_file_target = 'amr_pangenome.findjunctions.FindJunctions.fa_file'
 single_allele_target = 'amr_pangenome.findjunctions.FindJunctions.get_single_alleles'
 
+
 @pytest.fixture(scope='function')
 def mock_findjunction():
     mock_findjunction = mock.Mock(findjunctions.FindJunctions, wraps=findjunctions.FindJunctions)

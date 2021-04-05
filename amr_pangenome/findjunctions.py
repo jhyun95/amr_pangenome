@@ -129,7 +129,7 @@ class FindJunctions:
 
         while rs:
             # get the next gene
-            gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
+            gene = re.search(r'_C\\d+', rs.id).group(0).replace('_', '')
             if self.org + '_' + gene + 'A0' in self.single_alleles:  # skip if gene with one allele
                 try:
                     rs = next(parse_fa)
@@ -171,7 +171,7 @@ class FindJunctions:
             Generator object created by passing fasta file to SeqIO.parse from Bio
             package.
         gene_name: str
-            Name of the gene in the the gene cluster. Has the format r'C\d+'
+            Name of the gene in the the gene cluster. Has the format r'C\\d+'
         ref_seq: SeqRecord
             The current SeqRecord object yielded by fa_generator
         tmpdir: str
@@ -182,7 +182,7 @@ class FindJunctions:
         ref_seq: SeqRecord
             The first SeqRecord object that doesn't contain the 'gene_name'
         """
-        while re.search(r'_C\d+', ref_seq.id).group(0).replace('_', '') == gene_name:
+        while re.search(r'_C\\d+', ref_seq.id).group(0).replace('_', '') == gene_name:
             name = ref_seq.id
             faa = ref_seq.seq
             fa_loc = os.path.join(tmpdir, name + '.fa')
