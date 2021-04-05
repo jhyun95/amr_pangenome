@@ -129,16 +129,18 @@ class FindJunctions:
 
         while rs:
             # get the next gene
-            gene = re.search(r'_C\\d+', rs.id).group(0).replace('_', '')
+            gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
             if self.org + '_' + gene + 'A0' in self.single_alleles:  # skip if gene with one allele
                 try:
                     rs = next(parse_fa)
                     continue
                 except StopIteration:  # end of file
                     break
+            # take this val and split it into multiprocess
             with tempfile.TemporaryDirectory() as tmp_dir:
                 fna_temp = os.path.join(tmp_dir, 'alleles_fna')
                 os.mkdir(fna_temp)
+
                 # get all alleles of a gene cluster, then run twopaco and graphdump
                 rs = self.group_seq(parse_fa, gene, rs, fna_temp)
                 fa_list = os.listdir(fna_temp)
@@ -146,7 +148,7 @@ class FindJunctions:
                 db_out = self.run_twopaco(fpaths, kmer, filter_size, tmp_dir)
                 graph_path = self.run_graphdump(db_out, kmer, outfmt, tmp_dir)
 
-                # gather junctions for the gene junctions and write them to file
+                # gather junctions for the gene junctions and write them to coo formatted file
                 junction_list, pos_list = self.get_junction_data(graph_path, fa_list)
                 if len(junction_list) != len(pos_list):
                     raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
@@ -171,7 +173,7 @@ class FindJunctions:
             Generator object created by passing fasta file to SeqIO.parse from Bio
             package.
         gene_name: str
-            Name of the gene in the the gene cluster. Has the format r'C\\d+'
+            Name of the gene in the the gene cluster. Has the format 'C\\d+'
         ref_seq: SeqRecord
             The current SeqRecord object yielded by fa_generator
         tmpdir: str
@@ -182,7 +184,7 @@ class FindJunctions:
         ref_seq: SeqRecord
             The first SeqRecord object that doesn't contain the 'gene_name'
         """
-        while re.search(r'_C\\d+', ref_seq.id).group(0).replace('_', '') == gene_name:
+        while re.search(r'_C\d+', ref_seq.id).group(0).replace('_', '') == gene_name:
             name = ref_seq.id
             faa = ref_seq.seq
             fa_loc = os.path.join(tmpdir, name + '.fa')
