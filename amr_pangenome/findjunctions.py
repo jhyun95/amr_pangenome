@@ -154,10 +154,6 @@ class FindJunctions:
                     raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
                 self.write_coo_file(junction_list, pos_list, coo_out)
 
-            # for testing purposes only
-            count += 1
-            if count >= 1:
-                break
 
     # TODO: gene by allele fasta file
     # TODO: Make sure to include single allele genes

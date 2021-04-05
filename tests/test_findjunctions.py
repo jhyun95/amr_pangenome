@@ -5,7 +5,6 @@ import os
 import pandas as pd
 from scipy import sparse
 
-
 init_args = ('CC8', '/path/to/file')
 res_dir_target = 'amr_pangenome.findjunctions.FindJunctions.res_dir'
 fa_file_target = 'amr_pangenome.findjunctions.FindJunctions.fa_file'
@@ -205,10 +204,7 @@ def test_get_junction_data_single_cluster(redirect_temp, mock_findjunction, tmp_
 
 
 @pytest.mark.slow
-@mock.patch('amr_pangenome.findjunctions.tempfile.TemporaryDirectory')
-def test_get_junction_data_multi_cluster(redirect_temp, mock_findjunction, tmp_path):
-
-    redirect_temp.return_value = tmp_path
+def test_get_junction_data_multi_cluster(mock_findjunction, tmp_path):
     fa_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
     mock_findjunction.fa_file = os.path.join(ROOT_DIR, fa_file)
     findjunctions.FindJunctions.calc_junctions(mock_findjunction, kmer=5, outdir=tmp_path)
