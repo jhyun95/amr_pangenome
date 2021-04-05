@@ -26,16 +26,9 @@ class FindJunctions:
         self.alleles_file = self._org + self.__pickle_suffix
 
         # genes with single alleles are skipped during expensive junction search
-        self.single_alleles = None
+        self.single_alleles = []
         df_alleles = pd.read_pickle(os.path.join(self.res_dir, self.alleles_file))
         self.get_single_alleles(df_alleles)
-
-        # self._tempdir = tempfile.mkdtemp()
-        # self._fna_temp = os.path.join(self._tempdir, 'alleles_fna')
-        # os.mkdir(self._fna_temp)
-        # os.chmod(self._tempdir, 0o755)
-        # os.chmod(self._fna_temp, 0o755)
-        # print(self._tempdir)
 
         self.pos_data = []  # nucleotide position data for  junctions
         self.junction_row_idx = []  # junction names
@@ -82,7 +75,7 @@ class FindJunctions:
                 allele_freq[gene] = 1
         self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
-    def calc_junctions(self, kmer=35, outdir='junctions_out', outname='junctions.csv',
+    def calc_junctions(self, kmer=25, filter_size=36,  outdir='junctions_out', outname='junctions.csv',
                        outfmt='group', force=False):
         """
         Workhorse of the FindJunction class. Its the main method to calculate all the junctions between
@@ -91,7 +84,11 @@ class FindJunctions:
         Parameters
         ----------
         kmer: int, default 25
-            the size of the kmer to use for twopaco.
+            the size of the kmer to use for twopaco. Must be an odd positive integer.
+        filter_size: int default 36
+            filter size for bloom filter. Larger kmers require more memory. Refer to twopaco
+            docs for recommendations based on available memory. Default 36 is recommended for
+            16GB of memory.
         outdir: str, default 'junctions_out'
             path to directory where the results will be written
         outname: str, default 'junctions.csv'
@@ -110,17 +107,20 @@ class FindJunctions:
             else:
                 raise FileExistsError(f'{coo_out} exists, pass force=True to overwrite.')
 
+        if outfmt == 'gfa2':
+            raise NotImplementedError('This feature is coming to soon. Use \'group\' for outfmt instead')
+
+        if outfmt not in ['group', 'gfa2']:
+            raise ValueError('outfmt must be either \'group\' or \'gfa2\'')
+
+        if kmer % 2 == 0:
+            raise ValueError(f'passed kmer must be and odd number. {kmer} passed instead.')
+
         if not os.path.isdir(outdir):
             os.mkdir(outdir)
 
         if not outname.endswith('.csv'):
             outname += '.csv'
-
-        if outfmt not in ['group', 'gfa2']:
-            raise ValueError('outfmt must be either \'group\' or \'gfa2\'')
-
-        if outfmt == 'gfa2':
-            raise NotImplementedError('This feature is coming to soon. Use \'group\' for outfmt instead')
 
         # parse the fasta file containing all seqeuences
         parse_fa = SeqIO.parse(self.fa_file, 'fasta')
@@ -130,7 +130,7 @@ class FindJunctions:
         while rs:
             # get the next gene
             gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
-            if self._org + '_' + gene + 'A0' in self.single_alleles:  # skip if gene with one allele
+            if self.org + '_' + gene + 'A0' in self.single_alleles:  # skip if gene with one allele
                 try:
                     rs = next(parse_fa)
                     continue
@@ -139,15 +139,11 @@ class FindJunctions:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 fna_temp = os.path.join(tmp_dir, 'alleles_fna')
                 os.mkdir(fna_temp)
-                # os.chmod(self._tempdir, 0o755)
-                # os.chmod(self._fna_temp, 0o755)
-                # print(tmp_dir)
-
                 # get all alleles of a gene cluster, then run twopaco and graphdump
                 rs = self.group_seq(parse_fa, gene, rs, fna_temp)
                 fa_list = os.listdir(fna_temp)
                 fpaths = [os.path.join(fna_temp, i) for i in fa_list]
-                db_out = self.run_twopaco(fpaths, kmer, tmp_dir)
+                db_out = self.run_twopaco(fpaths, kmer, filter_size, tmp_dir)
                 graph_path = self.run_graphdump(db_out, kmer, outfmt, tmp_dir)
 
                 # gather junctions for the gene junctions and write them to file
@@ -201,7 +197,7 @@ class FindJunctions:
 
     # TODO: change outdir to outpath
     @staticmethod
-    def run_twopaco(fpaths, kmer, outdir):
+    def run_twopaco(fpaths, kmer, filtersize, outdir):
         """
 
         Parameters
@@ -210,6 +206,9 @@ class FindJunctions:
             list of paths to fasta files
         kmer: int
             size of the kmers to be used for twopaco junction finder
+        filtersize: int default 36
+            filter size for bloom filter. Larger kmers require more memory. Refer to twopaco
+            docs for recommendations based on available memory. Default 36 is recommended for
         outdir: str or path.PATH
             path to the output directory where the output will be stored
         Returns
@@ -220,7 +219,7 @@ class FindJunctions:
 
         db_out = os.path.join(outdir, 'debrujin.bin')
         two_paco_dir = os.path.join(ROOT_DIR, 'bin/twopaco')
-        tp_cmd = [two_paco_dir, '-f', str(kmer), '-o', db_out, '-t', '8']
+        tp_cmd = [two_paco_dir, '-k', str(kmer), '-f', str(filtersize), '-o', db_out, '-t', '8']
         tp_cmd.extend(fpaths)
         try:
             subprocess.check_output(tp_cmd, stderr=subprocess.STDOUT)
@@ -298,7 +297,6 @@ class FindJunctions:
 
         return df_junction_strain
 
-
     @staticmethod
     def write_coo_file(junction_list, pos_list, outfile):
         """
@@ -307,4 +305,3 @@ class FindJunctions:
         with open(outfile, 'a+') as out:
             for jct, pos in zip(junction_list, pos_list):
                 out.write(f'{jct},{pos}\n')
-

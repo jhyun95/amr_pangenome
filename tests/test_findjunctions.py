@@ -11,13 +11,13 @@ res_dir_target = 'amr_pangenome.findjunctions.FindJunctions.res_dir'
 fa_file_target = 'amr_pangenome.findjunctions.FindJunctions.fa_file'
 single_allele_target = 'amr_pangenome.findjunctions.FindJunctions.get_single_alleles'
 
-
 @pytest.fixture(scope='function')
 def mock_findjunction():
-    mock_findjunction = mock.Mock(findjunctions.FindJunctions)
+    mock_findjunction = mock.Mock(findjunctions.FindJunctions, wraps=findjunctions.FindJunctions)
     mock_findjunction.res_dir = '/dev/null'
     mock_findjunction.fa_file = 'Test.fna'
     mock_findjunction.org = 'Test'
+    mock_findjunction.single_alleles = []
     return mock_findjunction
 
 
@@ -103,11 +103,11 @@ two_paco_dir = os.path.join(ROOT_DIR, 'bin/twopaco')
 @mock.patch('amr_pangenome.findjunctions.os.listdir')
 def test_run_twopaco_process_error(os_path_listdir, os_path_join):
     os_path_listdir.return_value = ['fa1', 'fa2']
-    os_path_join.return_value = two_paco_dir  # path to compiled two_paco
+    os_path_join.return_value = two_paco_dir
     # should fail since 'fail' is passed instead of an int or str(int)
     with pytest.raises(SystemExit) as pytest_wrapped_e:
         # noinspection PyTypeChecker
-        findjunctions.FindJunctions.run_twopaco(['/dev/null/'], 'fail', 'tempdir')
+        findjunctions.FindJunctions.run_twopaco(['/dev/null/'], 'fail', 36, 'tempdir')
     assert pytest_wrapped_e.type == SystemExit
     assert pytest_wrapped_e.value.code == 1
 
@@ -115,7 +115,7 @@ def test_run_twopaco_process_error(os_path_listdir, os_path_join):
 @mock.patch('amr_pangenome.findjunctions.subprocess.check_output')
 def test_run_twopaco_cmd_line(subprocess_checkoutput):
     subprocess_checkoutput.return_value = 0
-    db_out = findjunctions.FindJunctions.run_twopaco(['/dev/null'], 35, 'tempdir')
+    db_out = findjunctions.FindJunctions.run_twopaco(['/dev/null'], 25, 36, 'tempdir')
     assert db_out == 'tempdir/debrujin.bin'
 
 
@@ -137,11 +137,7 @@ def test_get_junction_data():
     assert junction_data == ['fa0J0', 'fa1J0', 'fa2J0', 'fa1J1', 'fa2J1']
 
 
-# TODO: DO THE THINGS BELOW FOR INTEGRATION TEST OF THE NEW FUNCTIONS
-# TODO: Its going to too tough to patch and mock fasta file. so just mock the class
-# TODO: fa_file and point to a test file.
-# TODO: set up the test fa_generator with the test fasta files for group_seq too
-@pytest.mark.skip
+@pytest.mark.skip(reason='Not implemented yet.')
 def test_make_strain_junction_df(mock_findjunction):
     array = pd.array([[0, 1, 0], [1, 0, 1], [1, 1, 1]])
     df_alleles = pd.DataFrame(array, index=['A0', 'A1', 'A2'],
@@ -165,21 +161,72 @@ def test_write_coo_file(mock_open, junctions, positions):
     handle.write.assert_has_calls(mocked_calls)
 
 
-"""
-creates a sparse junction by fasta matrix from junction and position data.
-"""
+def test_get_junction_data_file_exits_error(mock_findjunction, tmp_path):
+    p = tmp_path / 'coo.txt'
+    p.write_text('test')
+    with pytest.raises(FileExistsError):
+        findjunctions.FindJunctions.calc_junctions(mock_findjunction, outdir=tmp_path)
+
+
+def test_get_junction_data_outfmt_value_error(mock_findjunction):
+    with pytest.raises(ValueError):
+        findjunctions.FindJunctions.calc_junctions(mock_findjunction, outfmt='gfa1')
+
+
+def test_get_junction_data_even_kmer_value_error(mock_findjunction):
+    with pytest.raises(ValueError):
+        findjunctions.FindJunctions.calc_junctions(mock_findjunction, kmer=2)
+
+
+@pytest.mark.slow
+@mock.patch('amr_pangenome.findjunctions.tempfile.TemporaryDirectory')
+def test_get_junction_data_single_cluster(redirect_temp, mock_findjunction, tmp_path):
+
+    redirect_temp.return_value = tmp_path
+    fa_file = 'tests/test_data/test_single_gene_cluster_fasta.fna'
+    mock_findjunction.fa_file = os.path.join(ROOT_DIR, fa_file)
+    findjunctions.FindJunctions.calc_junctions(mock_findjunction, kmer=5, outdir=tmp_path)
+
+    # check if proper files were made
+    expected_graph = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_graphdump.txt')
+    output_graph = os.path.join(tmp_path, 'graphdump.txt')
+    # check the graphdump output
+    with open(expected_graph, 'r') as expect:
+        with open(output_graph, 'r') as output:
+            assert ''.join(expect.readlines()) == ''.join(output.  readlines())
+
+    # check the coo text output
+    expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_coo.txt')
+    output_coo = os.path.join(tmp_path, 'coo.txt')
+    with open(expected_coo, 'r') as expect:
+        with open(output_coo, 'r') as output:
+            assert expect.readlines() == output.readlines()
+
+
+@pytest.mark.slow
+@mock.patch('amr_pangenome.findjunctions.tempfile.TemporaryDirectory')
+def test_get_junction_data_multi_cluster(redirect_temp, mock_findjunction, tmp_path):
+
+    redirect_temp.return_value = tmp_path
+    fa_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
+    mock_findjunction.fa_file = os.path.join(ROOT_DIR, fa_file)
+    findjunctions.FindJunctions.calc_junctions(mock_findjunction, kmer=5, outdir=tmp_path)
+
+    # don't check graphdump since thats overwritten with each gene cluster
+    expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_coo.txt')
+    output_coo = os.path.join(tmp_path, 'coo.txt')
+    with open(expected_coo, 'r') as expect:
+        with open(output_coo, 'r') as output:
+            assert expect.readlines() == output.readlines()
+
+
 """
 COO format 
 (data, (i, j)) where data, i and j are iterables containing data, row index and
 column index respectively.
 
-data is the position in the genome, what to do with sentinel junction with 0 positions?
 row index is the unique name for the junction
 column index is the name for the fasta file
 
-
-we don't have to determine the name and the column index at first,
- the create_sparse_rows should be 
- 
  should throw error if not match for the fasta is found
 """
