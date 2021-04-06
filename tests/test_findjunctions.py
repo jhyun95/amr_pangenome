@@ -13,7 +13,8 @@ single_allele_target = 'amr_pangenome.findjunctions.FindJunctions.get_single_all
 
 @pytest.fixture(scope='function')
 def mock_findjunction():
-    mock_findjunction = mock.Mock(findjunctions.FindJunctions, wraps=findjunctions.FindJunctions)
+    mock_findjunction = mock.Mock(findjunctions.FindJunctions,
+                                  wraps=findjunctions.FindJunctions)
     mock_findjunction.res_dir = '/dev/null'
     mock_findjunction.fa_file = 'Test.fna'
     mock_findjunction.org = 'Test'
@@ -193,7 +194,7 @@ def test_get_junction_data_single_cluster(redirect_temp, mock_findjunction, tmp_
     # check the graphdump output
     with open(expected_graph, 'r') as expect:
         with open(output_graph, 'r') as output:
-            assert ''.join(expect.readlines()) == ''.join(output.  readlines())
+            assert ''.join(expect.readlines()) == ''.join(output.readlines())
 
     # check the coo text output
     expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_coo.txt')

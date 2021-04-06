@@ -8,6 +8,9 @@ import re
 import tempfile
 import sys
 from scipy import sparse
+import concurrent.futures
+import itertools
+from mpi4py import MPI
 
 sys.path.append('../')
 from amr_pangenome import ROOT_DIR  # noqa
@@ -75,7 +78,7 @@ class FindJunctions:
                 allele_freq[gene] = 1
         self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
-    def calc_junctions(self, kmer=25, filter_size=36,  outdir='junctions_out', outname='junctions.csv',
+    def calc_junctions(self, kmer=35, filter_size=34,  outdir='junctions_out', outname='junctions.csv',
                        outfmt='group', force=False):
         """
         Workhorse of the FindJunction class. Its the main method to calculate all the junctions between
@@ -85,10 +88,11 @@ class FindJunctions:
         ----------
         kmer: int, default 25
             the size of the kmer to use for twopaco. Must be an odd positive integer.
-        filter_size: int default 36
+        filter_size: int default 34
             filter size for bloom filter. Larger kmers require more memory. Refer to twopaco
-            docs for recommendations based on available memory. Default 36 is recommended for
-            16GB of memory.
+            docs for recommendations based on available memory. WARNING: Raising this value can
+            significantly slow down the process by preventing multiprocessing. Read TwoPaco docs
+            before messing with it.
         outdir: str, default 'junctions_out'
             path to directory where the results will be written
         outname: str, default 'junctions.csv'
@@ -122,12 +126,20 @@ class FindJunctions:
         if not outname.endswith('.csv'):
             outname += '.csv'
 
-        # parse the fasta file containing all seqeuences
+        coo_outs = [os.path.join(outdir, f'coo{i}.txt') for i in range(4)]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
+            for cout, gene_cluster in zip(itertools.cycle(coo_outs), self._yield_gene_cluster()):
+                gene, tmp_dir = gene_cluster
+                f = executor.submit(self._run_single_cluster, tmp_dir, cout, filter_size, gene, kmer, outfmt)
+                print(f.result())
+
+    def _yield_gene_cluster(self):
         parse_fa = SeqIO.parse(self.fa_file, 'fasta')
         rs = next(parse_fa)
         count = 0
-
         while rs:
+            if count >= 10:
+                break
             # get the next gene
             gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
             if self.org + '_' + gene + 'A0' in self.single_alleles:  # skip if gene with one allele
@@ -136,27 +148,39 @@ class FindJunctions:
                     continue
                 except StopIteration:  # end of file
                     break
-            # take this val and split it into multiprocess
+
             with tempfile.TemporaryDirectory() as tmp_dir:
                 fna_temp = os.path.join(tmp_dir, 'alleles_fna')
                 os.mkdir(fna_temp)
 
-                # get all alleles of a gene cluster, then run twopaco and graphdump
+                # get all alleles of a gene cluster
                 rs = self.group_seq(parse_fa, gene, rs, fna_temp)
-                fa_list = os.listdir(fna_temp)
-                fpaths = [os.path.join(fna_temp, i) for i in fa_list]
-                db_out = self.run_twopaco(fpaths, kmer, filter_size, tmp_dir)
-                graph_path = self.run_graphdump(db_out, kmer, outfmt, tmp_dir)
+                # give this to a processor and move on to the next one
+                count += 1
+                print(f'Handing over {gene}, {tmp_dir}')
+                yield gene, tmp_dir
 
-                # gather junctions for the gene junctions and write them to coo formatted file
-                junction_list, pos_list = self.get_junction_data(graph_path, fa_list)
-                if len(junction_list) != len(pos_list):
-                    raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
-                self.write_coo_file(junction_list, pos_list, coo_out)
+    def _run_single_cluster(self, tmp_dir, coo_out, filter_size, gene, kmer, outfmt):
+        """
+           Internal method called by 'calc_junctions' to find junctions for a single gene cluster.
+           All parameters described here are described in the parent 'calc_junctions' function.
+        """
+        print(f'running with {gene}')
+        fna_temp = os.path.join(tmp_dir, 'alleles_fna')
+        fa_list = os.listdir(fna_temp)
+        fpaths = [os.path.join(fna_temp, i) for i in fa_list]
+        db_out = self.run_twopaco(fpaths, kmer, filter_size, tmp_dir)
+        graph_path = self.run_graphdump(db_out, kmer, outfmt, tmp_dir)
 
-
+        # gather junctions for the gene junctions and write them to coo formatted file
+        junction_list, pos_list = self.get_junction_data(graph_path, fa_list)
+        if len(junction_list) != len(pos_list):
+            raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
+        self.write_coo_file(junction_list, pos_list, coo_out)
+        return f'finished {gene}'
     # TODO: gene by allele fasta file
-    # TODO: Make sure to include single allele genes
+    # TODO: Make sure to include single allele genes <- maybe
+
     @staticmethod
     def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
         """
@@ -300,6 +324,7 @@ class FindJunctions:
         """
         Write the junction names and nucleotide positions into the outfile
         """
+        print(f'writing to file {outfile}')
         with open(outfile, 'a+') as out:
             for jct, pos in zip(junction_list, pos_list):
                 out.write(f'{jct},{pos}\n')
