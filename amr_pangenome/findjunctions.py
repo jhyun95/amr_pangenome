@@ -79,7 +79,7 @@ class FindJunctions:
         self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
     def calc_junctions(self, kmer=35, filter_size=34,  outdir='junctions_out', outname='junctions.csv',
-                       outfmt='group', force=False):
+                       outfmt='group', max_processes=1, force=False):
         """
         Workhorse of the FindJunction class. Its the main method to calculate all the junctions between
         the different alleles from the genes.The calculated junctions are written into the output file
@@ -99,6 +99,9 @@ class FindJunctions:
             name of the output file
         outfmt: str, {group, gfa2}, default 'group'
             output format for the junctions. only group and gfa2 formats are supported
+        max_processes: int, default 4
+            maxinum number of processes to use. Note, the number of processes used is limiited
+            by the memory usage.
         force: bool, default False
             whether to overwrite the existing output file. If output file already exists and False is passed
             a FileExistsError will be passed.
@@ -126,8 +129,8 @@ class FindJunctions:
         if not outname.endswith('.csv'):
             outname += '.csv'
 
-        coo_outs = [os.path.join(outdir, f'coo{i}.txt') for i in range(4)]
-        with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
+        coo_outs = [os.path.join(outdir, f'coo{i}.txt') for i in range(max_processes)]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
             for cout, gene_cluster in zip(itertools.cycle(coo_outs), self._yield_gene_cluster()):
                 gene, tmp_dir = gene_cluster
                 f = executor.submit(self._run_single_cluster, tmp_dir, cout, filter_size, gene, kmer, outfmt)
