@@ -17,59 +17,26 @@ from amr_pangenome import ROOT_DIR  # noqa
 
 class FindJunctions:
 
-    def __init__(self, org, res_dir):
-        self.__fna_suffix = '_coding_nuc_nr.fna'
-        self.__pickle_suffix = '_strain_by_allele.pickle.gz'
+    def __init__(self, org, fna_file):
 
         # get all the required files
-        self.org = org
-        self.res_dir = res_dir
-        self.fa_file = os.path.join(self.res_dir, self._org + self.__fna_suffix)
-        self.alleles_file = self._org + self.__pickle_suffix
+        self._org = org
+        self._fna_file = fna_file
 
         # genes with single alleles are skipped during expensive junction search
         self.single_alleles = []
-        # TODO: ideally, we should be able to calculate everything from fasta file and not rely on this df.
-
-        refseq = SeqIO.parse(os.path.join(self.res_dir, self.fa_file), 'fasta')
+        refseq = SeqIO.parse(self.fna_file, 'fasta')
         allele_names = [rs.id for rs in refseq]
         self.get_single_alleles(allele_names)
 
-        self.pos_data = []  # nucleotide position data for  junctions
-        self.junction_row_idx = []  # junction names
+    @property
+    def fna_file(self):
+        return self._fna_file
 
     @property
     def org(self):
         return self._org
 
-    @org.setter
-    def org(self, org):
-        self._org = org
-
-    @property
-    def res_dir(self):
-        return self._res_dir
-
-    @res_dir.setter
-    def res_dir(self, res_dir):
-        if not os.path.isdir(res_dir):
-            raise NotADirectoryError(f'{res_dir} directory not found. Must pass directory containing '
-                                     f'results from pangenome.py.')
-        self._res_dir = res_dir
-        self._fa_file = os.path.join(res_dir, self._org, self.__fna_suffix)
-
-    @property
-    def fa_file(self):
-        return self._fa_file
-
-    @fa_file.setter
-    def fa_file(self, fa_path):
-        if not os.path.isfile(fa_path):
-            raise FileNotFoundError(f'{fa_path} file not found. Run pangenome.py to generate these files')
-        self._fa_file = fa_path
-
-    # TODO: change the input to any iterable containing the gene names. This way
-    # in the future we can change it to read fasta file or any other input.
     def get_single_alleles(self, allele_names):
         """
         Updates findjunctions single_allele attribute to add genes with only single allele.
