@@ -71,9 +71,10 @@ def test_calc_junctions_outfmt_valuerror(os_path_isdir, mock_findjunction):
 
 
 @mock.patch('amr_pangenome.findjunctions.os.path.isdir')
-def test_calc_junctions_outfmt_notimplemented(os_path_isdir):
+@mock.patch('amr_pangenome.findjunctions.os.path.join')
+def test_calc_junctions_outfmt_notimplemented(os_path_join, os_path_isdir, mock_findjunction):
     os_path_isdir.return_value = True
-    mock_findjunction = mock.Mock(findjunctions.FindJunctions)
+    os_path_join.return_value = ''
     with pytest.raises(NotImplementedError):
         findjunctions.FindJunctions.calc_junctions(mock_findjunction, outfmt='gfa2')
 
@@ -144,8 +145,10 @@ def test_write_coo_file(mock_open, junctions, positions):
 
 
 def test_get_junction_data_file_exits_error(mock_findjunction, tmp_path):
-    p = tmp_path / 'coo.txt'
+    outfile = str(mock_findjunction.org) + '_coo.txt'
+    p = tmp_path / outfile
     p.write_text('test')
+
     with pytest.raises(FileExistsError):
         findjunctions.FindJunctions.calc_junctions(mock_findjunction, outdir=tmp_path)
 
@@ -162,12 +165,12 @@ def test_get_junction_data_even_kmer_value_error(mock_findjunction):
 
 @pytest.mark.slow
 @mock.patch('amr_pangenome.findjunctions.tempfile.TemporaryDirectory')
-def test_get_junction_data_single_cluster(redirect_temp, mock_findjunction, tmp_path):
+def test_get_junction_data_single_cluster(redirect_temp, tmp_path):
 
     redirect_temp.return_value = tmp_path
-    fa_file = 'tests/test_data/test_single_gene_cluster_fasta.fna'
-    mock_findjunction.fa_file = os.path.join(ROOT_DIR, fa_file)
-    findjunctions.FindJunctions.calc_junctions(mock_findjunction, kmer=5, outdir=tmp_path)
+    fna_file = 'tests/test_data/test_single_gene_cluster_fasta.fna'
+    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
+    fj.calc_junctions(kmer=5, outdir=tmp_path)
 
     # check if proper files were made
     expected_graph = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_graphdump.txt')
@@ -179,21 +182,21 @@ def test_get_junction_data_single_cluster(redirect_temp, mock_findjunction, tmp_
 
     # check the coo text output
     expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_coo.txt')
-    output_coo = os.path.join(tmp_path, 'coo.txt')
+    output_coo = os.path.join(tmp_path, fj.org + '_coo.txt')
     with open(expected_coo, 'r') as expect:
         with open(output_coo, 'r') as output:
             assert expect.readlines() == output.readlines()
 
 
 @pytest.mark.slow
-def test_get_junction_data_multi_cluster(mock_findjunction, tmp_path):
-    fa_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
-    mock_findjunction.fa_file = os.path.join(ROOT_DIR, fa_file)
-    findjunctions.FindJunctions.calc_junctions(mock_findjunction, kmer=5, outdir=tmp_path)
+def test_get_junction_data_multi_cluster(tmp_path):
+    fna_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
+    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
+    fj.calc_junctions(kmer=5, outdir=tmp_path)
 
     # don't check graphdump since thats overwritten with each gene cluster
     expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_coo.txt')
-    output_coo = os.path.join(tmp_path, 'coo.txt')
+    output_coo = os.path.join(tmp_path, fj.org + '_coo.txt')
     with open(expected_coo, 'r') as expect:
         with open(output_coo, 'r') as output:
             assert expect.readlines() == output.readlines()

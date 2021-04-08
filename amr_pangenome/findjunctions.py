@@ -17,11 +17,15 @@ from amr_pangenome import ROOT_DIR  # noqa
 
 class FindJunctions:
 
-    def __init__(self, org, fna_file):
+    def __init__(self, org, fna_file, sorted_fna=True):
 
         # get all the required files
         self._org = org
         self._fna_file = fna_file
+
+        # TODO: if the fasta file is not already sorted, sort now
+        if not sorted_fna:
+            pass
 
         # genes with single alleles are skipped during expensive junction search
         self.single_alleles = []
@@ -77,7 +81,7 @@ class FindJunctions:
             name of the output file
         outfmt: str, {group, gfa2}, default 'group'
             output format for the junctions. only group and gfa2 formats are supported
-        max_processes: int, default 4
+        max_processes: int, default 1
             maxinum number of processes to use. Note, the number of processes used is limiited
             by the memory usage.
         force: bool, default False
@@ -85,7 +89,7 @@ class FindJunctions:
             a FileExistsError will be passed.
         """
 
-        coo_out = os.path.join(outdir, 'coo.txt')
+        coo_out = os.path.join(outdir, self.org + '_coo.txt')
         if os.path.isfile(coo_out):
             if force:
                 os.remove(coo_out)
@@ -107,8 +111,12 @@ class FindJunctions:
         if not outname.endswith('.csv'):
             outname += '.csv'
 
+        # if only one process, write directly to output file
+        if max_processes == 1:
+            coo_outs = [coo_out]
+        else:  # else have each process write to a temp coo file
+            coo_outs = [os.path.join(outdir, f'coo{i}.txt') for i in range(max_processes)]
         # use multiprocessing to simulataneously process multiple gene clusters
-        coo_outs = [os.path.join(outdir, f'coo{i}.txt') for i in range(max_processes)]
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
             # map gene cluster with new process
             for cout, gene_cluster in zip(itertools.cycle(coo_outs), self._yield_gene_cluster()):
@@ -120,7 +128,7 @@ class FindJunctions:
         """
         Private method that generates gene clusters from fasta data.
         """
-        parse_fa = SeqIO.parse(self.fa_file, 'fasta')
+        parse_fa = SeqIO.parse(self.fna_file, 'fasta')
         rs = next(parse_fa)
         count = 0
         while rs:  # iterate through the fasta file
