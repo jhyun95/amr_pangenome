@@ -33,16 +33,16 @@ def positions():
 
 
 @pytest.mark.parametrize("args, expected", [(init_args, 'CC8')])
-@mock.patch('amr_pangenome.findjunctions.pd.read_pickle')
+@mock.patch('amr_pangenome.findjunctions.SeqIO.parse')
 @mock.patch(single_allele_target)
 @mock.patch(fa_file_target)
 @mock.patch(res_dir_target)
-def test_findjunctions_init_org(mock_isdir, mock_isfa, mock_single_allele, mock_read_pickle,
+def test_findjunctions_init_org(mock_isdir, mock_isfa, mock_single_allele, mock_SeqIO,
                                 args, expected):
     mock_isdir.return_value = args[1]
     mock_isfa.return_value = os.path.join(args[1], args[0] + '.fa')
     mock_single_allele.return_value = ['allele']
-    mock_read_pickle.return_value = ''
+    mock_SeqIO.return_value = ''
     fj = findjunctions.FindJunctions(*args)
     assert fj.org == expected
 
@@ -73,12 +73,10 @@ def test_findjunctions_init_resdir_exception(mock_isfa, mock_single_allele,
         findjunctions.FindJunctions(*args)
 
 
-@mock.patch('amr_pangenome.findjunctions.pd.read_pickle')
-def test_findjunctions_init_single_alleles(mock_read_pickle, mock_findjunction):
+def test_findjunctions_init_single_alleles(mock_findjunction):
     # patch the imported pandas function to overwrite them
-    mock_read_pickle.return_value = ''
-    df_alleles = pd.DataFrame(index=['Test_C11A1', 'Test_C11A2', 'Test_C21A0'])
-    findjunctions.FindJunctions.get_single_alleles(mock_findjunction, df_alleles)
+    names = ['Test_C11A1', 'Test_C11A2', 'Test_C21A0']
+    findjunctions.FindJunctions.get_single_alleles(mock_findjunction, names)
     assert mock_findjunction.single_alleles == ['Test_C21A0']
 
 

@@ -30,8 +30,10 @@ class FindJunctions:
         # genes with single alleles are skipped during expensive junction search
         self.single_alleles = []
         # TODO: ideally, we should be able to calculate everything from fasta file and not rely on this df.
-        df_alleles = pd.read_pickle(os.path.join(self.res_dir, self.alleles_file))
-        self.get_single_alleles(df_alleles)
+
+        refseq = SeqIO.parse(os.path.join(self.res_dir, self.fa_file), 'fasta')
+        allele_names = [rs.id for rs in refseq]
+        self.get_single_alleles(allele_names)
 
         self.pos_data = []  # nucleotide position data for  junctions
         self.junction_row_idx = []  # junction names
@@ -68,17 +70,17 @@ class FindJunctions:
 
     # TODO: change the input to any iterable containing the gene names. This way
     # in the future we can change it to read fasta file or any other input.
-    def get_single_alleles(self, df_alleles):
+    def get_single_alleles(self, allele_names):
         """
-        Returns genes with only single allele.
+        Updates findjunctions single_allele attribute to add genes with only single allele.
         Parameters
         ----------
-        df_alleles: pandas.DataFrame
-            pandas dataframe containing unique allele names in the index
+        allele_names: iterable
+            iterable containing unique allele names
         """
         # drop all genes with only one allele
         allele_freq = {}
-        for idx in df_alleles.index:
+        for idx in allele_names:
             gene = re.search(r'_C\d+', idx).group(0).replace('_', '')
 
             if gene in allele_freq:
@@ -154,12 +156,12 @@ class FindJunctions:
         parse_fa = SeqIO.parse(self.fa_file, 'fasta')
         rs = next(parse_fa)
         count = 0
-        while rs:
+        while rs:  # iterate through the fasta file
             if count >= 10:
                 break
-            # get the next gene name
+            # get the next gene name, must be formatted as ORG_C000A0 where C is the gene cluster name
             gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
-            if self.org + '_' + gene + 'A0' in self.single_alleles:  # skip if gene with one allele
+            if self.org + '_' + gene + 'A0' in self.single_alleles:
                 try:
                     rs = next(parse_fa)
                     continue
@@ -172,7 +174,7 @@ class FindJunctions:
 
                 # get all alleles of a gene cluster
                 rs = self.group_seq(parse_fa, gene, rs, fna_temp)
-                # give this to a processor and move on to the next one
+                # yield this cluster to a process and move on to the next one
                 count += 1
                 print(f'Handing over {gene}, {tmp_dir}')
                 yield gene, tmp_dir
@@ -181,8 +183,8 @@ class FindJunctions:
         """
            Private method called by 'calc_junctions' to find junctions for a single gene cluster.
            This method finds junctions for all fasta files  in a dir with twopaco and graphjunctions.
-            The results are writted to the ouput file in COO format. s
-           All parameters described here are described in the parent 'calc_junctions' function.
+           The results are writted to the ouput file in COO format. All parameters described here are
+           described in the parent 'calc_junctions' function.
         """
         print(f'running with {gene}')
         fna_temp = os.path.join(tmp_dir, 'alleles_fna')
