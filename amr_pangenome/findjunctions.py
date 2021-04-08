@@ -10,7 +10,6 @@ import sys
 from scipy import sparse
 import concurrent.futures
 import itertools
-from mpi4py import MPI
 
 sys.path.append('../')
 from amr_pangenome import ROOT_DIR  # noqa
@@ -30,6 +29,7 @@ class FindJunctions:
 
         # genes with single alleles are skipped during expensive junction search
         self.single_alleles = []
+        # TODO: ideally, we should be able to calculate everything from fasta file and not rely on this df.
         df_alleles = pd.read_pickle(os.path.join(self.res_dir, self.alleles_file))
         self.get_single_alleles(df_alleles)
 
@@ -66,7 +66,16 @@ class FindJunctions:
             raise FileNotFoundError(f'{fa_path} file not found. Run pangenome.py to generate these files')
         self._fa_file = fa_path
 
+    # TODO: change the input to any iterable containing the gene names. This way
+    # in the future we can change it to read fasta file or any other input.
     def get_single_alleles(self, df_alleles):
+        """
+        Returns genes with only single allele.
+        Parameters
+        ----------
+        df_alleles: pandas.DataFrame
+            pandas dataframe containing unique allele names in the index
+        """
         # drop all genes with only one allele
         allele_freq = {}
         for idx in df_alleles.index:
@@ -90,7 +99,7 @@ class FindJunctions:
             the size of the kmer to use for twopaco. Must be an odd positive integer.
         filter_size: int default 34
             filter size for bloom filter. Larger kmers require more memory. Refer to twopaco
-            docs for recommendations based on available memory. WARNING: Raising this value can
+            docs for recom=-cdhnrsumendations based on available memory. WARNING: Raising this value can
             significantly slow down the process by preventing multiprocessing. Read TwoPaco docs
             before messing with it.
         outdir: str, default 'junctions_out'
@@ -129,21 +138,26 @@ class FindJunctions:
         if not outname.endswith('.csv'):
             outname += '.csv'
 
+        # use multiprocessing to simulataneously process multiple gene clusters
         coo_outs = [os.path.join(outdir, f'coo{i}.txt') for i in range(max_processes)]
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
+            # map gene cluster with new process
             for cout, gene_cluster in zip(itertools.cycle(coo_outs), self._yield_gene_cluster()):
                 gene, tmp_dir = gene_cluster
                 f = executor.submit(self._run_single_cluster, tmp_dir, cout, filter_size, gene, kmer, outfmt)
                 print(f.result())
 
     def _yield_gene_cluster(self):
+        """
+        Private method that generates gene clusters from fasta data.
+        """
         parse_fa = SeqIO.parse(self.fa_file, 'fasta')
         rs = next(parse_fa)
         count = 0
         while rs:
             if count >= 10:
                 break
-            # get the next gene
+            # get the next gene name
             gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
             if self.org + '_' + gene + 'A0' in self.single_alleles:  # skip if gene with one allele
                 try:
@@ -165,7 +179,9 @@ class FindJunctions:
 
     def _run_single_cluster(self, tmp_dir, coo_out, filter_size, gene, kmer, outfmt):
         """
-           Internal method called by 'calc_junctions' to find junctions for a single gene cluster.
+           Private method called by 'calc_junctions' to find junctions for a single gene cluster.
+           This method finds junctions for all fasta files  in a dir with twopaco and graphjunctions.
+            The results are writted to the ouput file in COO format. s
            All parameters described here are described in the parent 'calc_junctions' function.
         """
         print(f'running with {gene}')
