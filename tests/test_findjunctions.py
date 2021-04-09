@@ -145,12 +145,12 @@ def test_write_coo_file(mock_open, junctions, positions):
 
 
 def test_get_junction_data_file_exits_error(mock_findjunction, tmp_path):
-    outfile = str(mock_findjunction.org) + '_coo.txt'
-    p = tmp_path / outfile
-    p.write_text('test')
+    name = str(mock_findjunction.org) + '_jct.csv'
+    outname = tmp_path / name
+    outname.write_text('test')
 
     with pytest.raises(FileExistsError):
-        findjunctions.FindJunctions.calc_junctions(mock_findjunction, outdir=tmp_path)
+        findjunctions.FindJunctions.calc_junctions(mock_findjunction, outname=outname)
 
 
 def test_get_junction_data_outfmt_value_error(mock_findjunction):

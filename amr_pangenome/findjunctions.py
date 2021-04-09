@@ -15,6 +15,7 @@ sys.path.append('../')
 from amr_pangenome import ROOT_DIR  # noqa
 
 
+# TODO: write function for removing sentinel and convergent bifurcation junctions
 class FindJunctions:
 
     def __init__(self, org, fna_file, sorted_fna=True):
@@ -60,7 +61,7 @@ class FindJunctions:
                 allele_freq[gene] = 1
         self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
-    def calc_junctions(self, kmer=35, filter_size=34,  outdir='junctions_out', outname='junctions.csv',
+    def calc_junctions(self, kmer=35, filter_size=34, outname='junctions.csv',
                        outfmt='group', max_processes=1, force=False):
         """
         Workhorse of the FindJunction class. Its the main method to calculate all the junctions between
@@ -75,10 +76,8 @@ class FindJunctions:
             docs for recom=-cdhnrsumendations based on available memory. WARNING: Raising this value can
             significantly slow down the process by preventing multiprocessing. Read TwoPaco docs
             before messing with it.
-        outdir: str, default 'junctions_out'
-            path to directory where the results will be written
-        outname: str, default 'junctions.csv'
-            name of the output file
+        outname: str, path.PATH 'junctions.csv'
+            path to the output file
         outfmt: str, {group, gfa2}, default 'group'
             output format for the junctions. only group and gfa2 formats are supported
         max_processes: int, default 1
@@ -89,12 +88,15 @@ class FindJunctions:
             a FileExistsError will be passed.
         """
 
-        coo_out = os.path.join(outdir, self.org + '_coo.txt')
-        if os.path.isfile(coo_out):
+        # coo_out = os.path.join(outdir, self.org + '_coo.txt')
+        if os.path.isfile(outname):
             if force:
-                os.remove(coo_out)
+                os.remove(outname)
             else:
-                raise FileExistsError(f'{coo_out} exists, pass force=True to overwrite.')
+                raise FileExistsError(f'{outname} exists, pass force=True to overwrite.')
+
+        if not outname.endswith('.csv'):
+            outname += '.csv'
 
         if outfmt == 'gfa2':
             raise NotImplementedError('This feature is coming to soon. Use \'group\' for outfmt instead')
@@ -105,28 +107,23 @@ class FindJunctions:
         if kmer % 2 == 0:
             raise ValueError(f'passed kmer must be and odd number. {kmer} passed instead.')
 
-        if not os.path.isdir(outdir):
-            os.mkdir(outdir)
-
-        if not outname.endswith('.csv'):
-            outname += '.csv'
-
         # if only one process, write directly to output file
         if max_processes == 1:
-            coo_outs = [coo_out]
+            jct_outs = [outname]
         else:  # else have each process write to a temp coo file
-            coo_outs = [os.path.join(outdir, f'coo{i}.txt') for i in range(max_processes)]
+            outdir = os.path.dirname(outname)
+            jct_outs = [os.path.join(outdir, f'jct{i}.txt') for i in range(max_processes)]
         # use multiprocessing to simulataneously process multiple gene clusters
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
             # map gene cluster with new process
-            for cout, gene_cluster in zip(itertools.cycle(coo_outs), self._yield_gene_cluster()):
+            for jout, gene_cluster in zip(itertools.cycle(jct_outs), self._yield_gene_cluster()):
                 gene, tmp_dir = gene_cluster
-                f = executor.submit(self._run_single_cluster, tmp_dir, cout, filter_size, gene, kmer, outfmt)
+                f = executor.submit(self._run_single_cluster, tmp_dir, jout, filter_size, gene, kmer, outfmt)
                 print(f.result())
 
     def _yield_gene_cluster(self):
         """
-        Private method that generates gene clusters from fasta data.
+        Private method that generates and yeilds gene clusters from fasta data.
         """
         parse_fa = SeqIO.parse(self.fna_file, 'fasta')
         rs = next(parse_fa)
@@ -174,8 +171,6 @@ class FindJunctions:
             raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
         self.write_coo_file(junction_list, pos_list, coo_out)
         return f'finished {gene}'
-    # TODO: gene by allele fasta file
-    # TODO: Make sure to include single allele genes <- maybe
 
     @staticmethod
     def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
@@ -324,3 +319,23 @@ class FindJunctions:
         with open(outfile, 'a+') as out:
             for jct, pos in zip(junction_list, pos_list):
                 out.write(f'{jct},{pos}\n')
+
+    @staticmethod
+    def make_strain_junction_df(jct_coo_file, df_alleles, out_coo_file):
+        """
+        input should be coo.txt file and allele file and output should be junction x genome dataframe
+
+        for line in coo.txt:
+            get the allele name
+            check which genomes have those alleles
+            store in coo format ((junctions, genomes), position)
+        change to sparse matrix, then save to file.
+        """
+        with open(jct_coo_file, 'r') as res_in:
+            with open(out_coo_file, 'w') as out:
+                for line in res_in.readlines():
+                    name, jpos = line.split(',')
+                    allele_name = name[:name.rfind('J')]  # clip the junction number
+                    genomes = df_alleles.loc[allele_name].dropna().index
+                    for genome in genomes:
+                        out.write(f'({name}, {genome})  , {jpos}')
