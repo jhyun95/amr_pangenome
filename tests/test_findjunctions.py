@@ -120,22 +120,9 @@ def test_get_junction_data():
     assert junction_data == ['fa0J0', 'fa1J0', 'fa2J0', 'fa1J1', 'fa2J1']
 
 
-@pytest.mark.skip(reason='Not implemented yet.')
-def test_make_strain_junction_df(mock_findjunction):
-    array = pd.array([[0, 1, 0], [1, 0, 1], [1, 1, 1]])
-    df_alleles = pd.DataFrame(array, index=['A0', 'A1', 'A2'],
-                              columns=['fasta1', 'fasta2', 'fasta3'])
-    mock_findjunction.junction_row_idx = junctions
-    mock_findjunction.pos_data = positions
-    res = findjunctions.FindJunctions.make_junction_strain_df(mock_findjunction, df_alleles)
-    assert res.dtype == int
-    assert res.index == junctions
-    assert res.columns == df_alleles.columns
-
-
 @mock.patch('builtins.open', new_callable=mock.mock_open)
-def test_write_coo_file(mock_open, junctions, positions):
-    findjunctions.FindJunctions.write_coo_file(junctions, positions, '/dev/null/text.txt')
+def test_write_jct_file(mock_open, junctions, positions):
+    findjunctions.FindJunctions.write_jct_file(junctions, positions, '/dev/null/text.txt')
     mock_open.assert_called_with('/dev/null/text.txt', 'a+')
 
     handle = mock_open()
@@ -182,8 +169,8 @@ def test_get_junction_data_single_cluster(redirect_temp, tmp_path):
             assert ''.join(expect.readlines()) == ''.join(output.readlines())
 
     # check the coo text output
-    expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_coo.txt')
-    with open(expected_coo, 'r') as expect:
+    expected_jct = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_jct.txt')
+    with open(expected_jct, 'r') as expect:
         with open(out_path, 'r') as output:
             assert expect.readlines() == output.readlines()
 
@@ -196,19 +183,26 @@ def test_get_junction_data_multi_cluster(tmp_path):
     fj.calc_junctions(kmer=5, outname=out_path)
 
     # don't check graphdump since thats overwritten with each gene cluster
-    expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_coo.txt')
-    with open(expected_coo, 'r') as expect:
+    expected_jct = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_jct.txt')
+    with open(expected_jct, 'r') as expect:
         with open(out_path, 'r') as output:
             assert expect.readlines() == output.readlines()
 
 
-"""
-COO format 
-(data, (i, j)) where data, i and j are iterables containing data, row index and
-column index respectively.
+def test_make_strain_junction_df_direct_error():
+    with pytest.raises(NotADirectoryError):
+        findjunctions.FindJunctions.make_junction_strain_df('jct_file', 'mock_df',
+                                                            outfile='/dev/null/junctions_df.pickle.gz')
 
-row index is the unique name for the junction
-column index is the name for the fasta file
 
- should throw error if not match for the fasta is found
-"""
+def test_make_junction_strain_df(tmp_path):
+    jct_file = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_jct.txt')
+    df_files = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_allele_genome.pickle.gz')
+    expected_file = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_junction_df.pickle.gz')
+    df_alleles = pd.read_pickle(df_files)
+    outfile = str(tmp_path / 'junction_df.pickle.gz')
+
+    test_output = findjunctions.FindJunctions.make_junction_strain_df(jct_file, df_alleles, savefile=True,
+                                                                      outfile=outfile)
+    expected = pd.read_pickle(expected_file)
+    assert all(expected.eq(test_output))

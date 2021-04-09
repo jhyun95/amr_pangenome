@@ -10,6 +10,7 @@ import sys
 from scipy import sparse
 import concurrent.futures
 import itertools
+import numpy as np
 
 sys.path.append('../')
 from amr_pangenome import ROOT_DIR  # noqa
@@ -88,7 +89,6 @@ class FindJunctions:
             a FileExistsError will be passed.
         """
 
-        # coo_out = os.path.join(outdir, self.org + '_coo.txt')
         if os.path.isfile(outname):
             if force:
                 os.remove(outname)
@@ -110,7 +110,7 @@ class FindJunctions:
         # if only one process, write directly to output file
         if max_processes == 1:
             jct_outs = [outname]
-        else:  # else have each process write to a temp coo file
+        else:  # else have each process write to a temp jct file
             outdir = os.path.dirname(outname)
             jct_outs = [os.path.join(outdir, f'jct{i}.txt') for i in range(max_processes)]
         # use multiprocessing to simulataneously process multiple gene clusters
@@ -119,7 +119,7 @@ class FindJunctions:
             for jout, gene_cluster in zip(itertools.cycle(jct_outs), self._yield_gene_cluster()):
                 gene, tmp_dir = gene_cluster
                 f = executor.submit(self._run_single_cluster, tmp_dir, jout, filter_size, gene, kmer, outfmt)
-                print(f.result())
+                f.result()
 
     def _yield_gene_cluster(self):
         """
@@ -148,28 +148,26 @@ class FindJunctions:
                 rs = self.group_seq(parse_fa, gene, rs, fna_temp)
                 # yield this cluster to a process and move on to the next one
                 count += 1
-                print(f'Handing over {gene}, {tmp_dir}')
                 yield gene, tmp_dir
 
-    def _run_single_cluster(self, tmp_dir, coo_out, filter_size, gene, kmer, outfmt):
+    def _run_single_cluster(self, tmp_dir, jct_out, filter_size, gene, kmer, outfmt):
         """
            Private method called by 'calc_junctions' to find junctions for a single gene cluster.
            This method finds junctions for all fasta files  in a dir with twopaco and graphjunctions.
-           The results are writted to the ouput file in COO format. All parameters described here are
+           The results are writted to the ouput file in jct format. All parameters described here are
            described in the parent 'calc_junctions' function.
         """
-        print(f'running with {gene}')
         fna_temp = os.path.join(tmp_dir, 'alleles_fna')
         fa_list = os.listdir(fna_temp)
         fpaths = [os.path.join(fna_temp, i) for i in fa_list]
         db_out = self.run_twopaco(fpaths, kmer, filter_size, tmp_dir)
         graph_path = self.run_graphdump(db_out, kmer, outfmt, tmp_dir)
 
-        # gather junctions for the gene junctions and write them to coo formatted file
+        # gather junctions for the gene junctions and write them to jct formatted file
         junction_list, pos_list = self.get_junction_data(graph_path, fa_list)
         if len(junction_list) != len(pos_list):
             raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
-        self.write_coo_file(junction_list, pos_list, coo_out)
+        self.write_jct_file(junction_list, pos_list, jct_out)
         return f'finished {gene}'
 
     @staticmethod
@@ -275,7 +273,7 @@ class FindJunctions:
     @staticmethod
     def get_junction_data(graphdump_out, fa_list):
         """
-        Read the output file from graphdump, and convert it to COO formatted sparse data.
+        Read the output file from graphdump, and convert it to jct formatted sparse data.
         Parameters
         ----------
         graphdump_out: str, pathlib.Path
@@ -304,38 +302,64 @@ class FindJunctions:
 
         return junction_row_idx, pos_data
 
-    def make_junction_strain_df(self, df_alleles):
-        df_junction_strain = pd.DataFrame(index=self.junction_row_idx, columns=df_alleles.columns,
-                                          dtype=int)
-
-        return df_junction_strain
-
     @staticmethod
-    def write_coo_file(junction_list, pos_list, outfile):
+    def write_jct_file(junction_list, pos_list, outfile):
         """
-        Write the junction names and nucleotide positions into the outfile
+        Write the junction names and nucleotide positions into the outfile.
+        Format: junctionid, junction_pos.
         """
-        print(f'writing to file {outfile}')
         with open(outfile, 'a+') as out:
             for jct, pos in zip(junction_list, pos_list):
                 out.write(f'{jct},{pos}\n')
 
     @staticmethod
-    def make_strain_junction_df(jct_coo_file, df_alleles, out_coo_file):
+    def make_junction_strain_df(jct_file, df_alleles, savefile=False,
+                                outfile='junction_df.pickle.gz'):
         """
         input should be coo.txt file and allele file and output should be junction x genome dataframe
 
         for line in coo.txt:
             get the allele name
             check which genomes have those alleles
-            store in coo format ((junctions, genomes), position)
+            store in coo format ((junctions, genomes), position)bfvx
         change to sparse matrix, then save to file.
         """
-        with open(jct_coo_file, 'r') as res_in:
-            with open(out_coo_file, 'w') as out:
-                for line in res_in.readlines():
-                    name, jpos = line.split(',')
-                    allele_name = name[:name.rfind('J')]  # clip the junction number
-                    genomes = df_alleles.loc[allele_name].dropna().index
-                    for genome in genomes:
-                        out.write(f'({name}, {genome})  , {jpos}')
+        outdir = os.path.dirname(outfile)
+        if not os.path.isdir(outdir):
+            raise NotADirectoryError(f'{outdir} does not exist')
+        if not outfile.endswith('.gz'):
+            outfile += outfile + '.gz'
+        junction_list = []
+        genomes_list = []
+        jpos_list = []
+
+        junction2num = {}
+        num2junction = {}
+        junction_no = 0
+        # all of them have to be a number
+        with open(jct_file, 'r') as res_in:
+            for line in res_in.readlines():
+                name, jpos = line.split(',')
+                allele_name = name[:name.rfind('J')]  # clip the junction number
+                genomes = df_alleles.loc[allele_name].dropna().index
+                genomes_list.extend(genomes)
+                jpos_list.extend([int(jpos)] * len(genomes))
+                junction_list.extend([name] * len(genomes))
+
+                junction2num.update({name: junction_no})
+                num2junction.update({junction_no: name})
+                junction_no += 1
+
+        num2genome = dict(zip(range(df_alleles.shape[0]), df_alleles.columns))
+        genome2num = dict(zip(df_alleles.columns, range(df_alleles.shape[0])))
+
+        rows = [junction2num[i] for i in junction_list]
+        cols = [genome2num[i] for i in genomes_list]
+
+        # convert from COO format to sparse dataframes, and merge duplicate indices
+        coo_mat = sparse.coo_matrix((jpos_list, (rows, cols)))
+        coo_df = pd.DataFrame.sparse.from_spmatrix(coo_mat).astype(pd.SparseDtype('int64', np.nan))
+        coo_df.rename(columns=num2genome, index=num2junction, inplace=True)
+        if savefile:
+            coo_df.to_pickle(outfile, compression='gzip')
+        return coo_df
