@@ -170,7 +170,8 @@ def test_get_junction_data_single_cluster(redirect_temp, tmp_path):
     redirect_temp.return_value = tmp_path
     fna_file = 'tests/test_data/test_single_gene_cluster_fasta.fna'
     fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
-    fj.calc_junctions(kmer=5, outdir=tmp_path)
+    out_path = os.path.join(tmp_path, fj.org + '_jct.csv')
+    fj.calc_junctions(kmer=5, outname=out_path)
 
     # check if proper files were made
     expected_graph = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_graphdump.txt')
@@ -182,9 +183,8 @@ def test_get_junction_data_single_cluster(redirect_temp, tmp_path):
 
     # check the coo text output
     expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_coo.txt')
-    output_coo = os.path.join(tmp_path, fj.org + '_coo.txt')
     with open(expected_coo, 'r') as expect:
-        with open(output_coo, 'r') as output:
+        with open(out_path, 'r') as output:
             assert expect.readlines() == output.readlines()
 
 
@@ -192,13 +192,13 @@ def test_get_junction_data_single_cluster(redirect_temp, tmp_path):
 def test_get_junction_data_multi_cluster(tmp_path):
     fna_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
     fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
-    fj.calc_junctions(kmer=5, outdir=tmp_path)
+    out_path = os.path.join(tmp_path, fj.org + '_jct.csv')
+    fj.calc_junctions(kmer=5, outname=out_path)
 
     # don't check graphdump since thats overwritten with each gene cluster
     expected_coo = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_coo.txt')
-    output_coo = os.path.join(tmp_path, fj.org + '_coo.txt')
     with open(expected_coo, 'r') as expect:
-        with open(output_coo, 'r') as output:
+        with open(out_path, 'r') as output:
             assert expect.readlines() == output.readlines()
 
 
