@@ -1,7 +1,7 @@
 # amr_pangenome
 Pan-genome construction/analysis tools centered around PATRIC and antimicrobial resistance.
 
-The findjunction module uses precompiled TwoPaco binary. If you use this module, please cite:
+The findjunction module uses precompiled TwoPaco binary. If you use this module, please additionally cite:
 
     'Ilia Minkin, Son Pham, and Paul Medvedev
     "TwoPaCo: An efficient algorithm to build the compacted de Bruijn graph from many complete genomes"
