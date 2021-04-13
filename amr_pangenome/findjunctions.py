@@ -154,7 +154,7 @@ class FindJunctions:
         """
            Private method called by 'calc_junctions' to find junctions for a single gene cluster.
            This method finds junctions for all fasta files  in a dir with twopaco and graphjunctions.
-           The results are writted to the ouput file in jct format. All parameters described here are
+           The results are written to the ouput file in jct format. All parameters described here are
            described in the parent 'calc_junctions' function.
         """
         fna_temp = os.path.join(tmp_dir, 'alleles_fna')
@@ -316,14 +316,26 @@ class FindJunctions:
     def make_junction_strain_df(jct_file, df_alleles, savefile=False,
                                 outfile='junction_df.pickle.gz'):
         """
-        input should be coo.txt file and allele file and output should be junction x genome dataframe
+        Creates junction by genome dataframe from jct data and allele by genome data.
 
-        for line in coo.txt:
-            get the allele name
-            check which genomes have those alleles
-            store in coo format ((junctions, genomes), position)bfvx
-        change to sparse matrix, then save to file.
+        Parameters
+        ----------
+        jct_file: str, path.PATH
+            path to the junction file; junction files have format <jct_number>, <jct_position>
+        df_alleles: pandas.DataFrame
+            pandas sparse dataframe containing binary alleles by genome data
+        savefile: bool, default False
+            whether to save jct data by genome dataframe
+        outfile: str, path.PATH, default 'junction_df.pickle.gz'
+            path to file where the output will be saved if savefile = True.
+
+        Returns
+        -------
+        jct_df: pd.DataFrame
+            sparse dataframe containing junction by genome data. The values are junction positions
+            in the gene.
         """
+        
         outdir = os.path.dirname(outfile)
         if not os.path.isdir(outdir):
             raise NotADirectoryError(f'{outdir} does not exist')
@@ -363,3 +375,10 @@ class FindJunctions:
         if savefile:
             coo_df.to_pickle(outfile, compression='gzip')
         return coo_df
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+
+
