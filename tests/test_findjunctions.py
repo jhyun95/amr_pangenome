@@ -206,3 +206,28 @@ def test_make_junction_strain_df(tmp_path):
                                                                       outfile=outfile)
     expected = pd.read_pickle(expected_file)
     assert all(expected.eq(test_output))
+
+
+ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
+
+
+@pytest.mark.skip(reason='need to implement mock junction')
+@mock.patch('amr_pangenome.findjunctions.os.path.join')
+def test_run_nt_card_process_error(os_path_join):
+    os_path_join.return_value = ntcard_dir
+    # should fail since 'fail' is passed instead of an int or str(int)
+    with pytest.raises(SystemExit) as pytest_wrapped_e:
+        # noinspection PyTypeChecker
+        findjunctions.FindJunctions._run_ntcard('/file/doesnt/exist.fna',
+                                                '/dev/null/out.txt')
+    assert pytest_wrapped_e.type == SystemExit
+    assert pytest_wrapped_e.value.code == 1
+
+
+def test_calc_max():
+    filein = os.path.join(ROOT_DIR, 'tests/test_data/test_calc_max_data.txt')
+    assert findjunctions.FindJunctions._calc_max(filein) == 41
+
+
+
+

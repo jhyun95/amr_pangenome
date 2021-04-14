@@ -24,7 +24,6 @@ class FindJunctions:
         # get all the required files
         self._org = org
         self._fna_file = fna_file
-
         # TODO: if the fasta file is not already sorted, sort now
         if not sorted_fna:
             pass
@@ -121,7 +120,8 @@ class FindJunctions:
                 f = executor.submit(self._run_single_cluster, tmp_dir, jout, filter_size, gene, kmer, outfmt)
                 f.result()
 
-    def _yield_gene_cluster(self):
+    # TODO: get rid of 'alleles_fna' dir
+    def _yield_gene_cluster(self, group=False):
         """
         Private method that generates and yeilds gene clusters from fasta data.
         """
@@ -145,7 +145,7 @@ class FindJunctions:
                 os.mkdir(fna_temp)
 
                 # get all alleles of a gene cluster
-                rs = self.group_seq(parse_fa, gene, rs, fna_temp)
+                rs = self.group_seq(parse_fa, gene, rs, fna_temp, group=group)
                 # yield this cluster to a process and move on to the next one
                 count += 1
                 yield gene, tmp_dir
@@ -171,7 +171,7 @@ class FindJunctions:
         return f'finished {gene}'
 
     @staticmethod
-    def group_seq(fa_generator, gene_name, ref_seq, tmpdir):
+    def group_seq(fa_generator, gene_name, ref_seq, tmpdir, group=False):
         """
         Iterates through the fa_generator object
         created by SeqIO.parse and finds all sequences for the gene cluster i.e.
@@ -187,6 +187,8 @@ class FindJunctions:
             The current SeqRecord object yielded by fa_generator
         tmpdir: str
             Path to the temporary directory where the fasta file will be stored
+        group: bool default False
+            Whether to write all the fasta sequences in cluster in a single file
 
         Returns
         -------
@@ -196,8 +198,13 @@ class FindJunctions:
         while re.search(r'_C\d+', ref_seq.id).group(0).replace('_', '') == gene_name:
             name = ref_seq.id
             faa = ref_seq.seq
-            fa_loc = os.path.join(tmpdir, name + '.fa')
-            with open(fa_loc, 'w') as fa:
+
+            if group:
+                fa_loc = os.path.join(tmpdir, gene_name + '.fa')
+            else:
+                fa_loc = os.path.join(tmpdir, name + '.fa')
+
+            with open(fa_loc, 'a+') as fa:
                 fa.write('>{}\n{}\n'.format(name, faa))
 
             try:
@@ -335,7 +342,7 @@ class FindJunctions:
             sparse dataframe containing junction by genome data. The values are junction positions
             in the gene.
         """
-        
+
         outdir = os.path.dirname(outfile)
         if not os.path.isdir(outdir):
             raise NotADirectoryError(f'{outdir} does not exist')
@@ -376,9 +383,107 @@ class FindJunctions:
             coo_df.to_pickle(outfile, compression='gzip')
         return coo_df
 
+    def calc_kmer(self, kmers=(31, 33, 35, 37), max_processes=1, sample=1000):
+        """
+        Sample gene clusters for kmer frequency distribution.
+
+        Parameters
+        ----------
+        kmers: tuple, iterable default (31, 33, 35, 37)
+            kmer sizes to be sampled
+        max_processes: int default 1
+            number of processes to use
+        sample: int default 1000
+            number of gene clusters to sample. The first n number of clusters are sampled
+        """
+        max_freq = []
+        sampled = 0
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            outname = os.path.join(tmp_dir, 'kmer.txt')
+            if max_processes == 1:
+                kmer_outs = [outname]
+            else:  # else have each process write to a temp out file
+                kmer_outs = [os.path.join(tmp_dir, f'kmer{i}.txt') for i in range(max_processes)]
+
+            # use multiprocessing to simulataneously process multiple gene clusters
+            with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
+                # map gene cluster with new process
+                for kout, gene_cluster in zip(itertools.cycle(kmer_outs), self._yield_gene_cluster(group=True)):
+                    gene, fa_tmp = gene_cluster
+                    flist = os.listdir(fa_tmp + '/alleles_fna/')
+                    fa_files = [os.path.join(fa_tmp + '/alleles_fna/', i) for i in flist]
+                    f = executor.submit(self._run_ntcard, fa_files, kout, kmers)
+                    lfreq = f.result()
+                    max_freq.append(lfreq)
+                    sampled += 1
+                    if sampled >= sample:
+                        return max_freq
+
+        return max_freq
+
+    def _run_ntcard(self, fa_file, outfile, kmers=(31, 33, 35, 37)):
+        """
+        Sample gene clusters for kmer frequency distribution.
+
+        Parameters
+        ----------
+        fa_file: str, path.PATH or list
+            path to fasta file or list of paths to fasta file with the sequnces to be sampled;
+            searches for files ending in fna.
+        outfile: str, path.PATH
+            path to file where the output of ntCard will be written
+        kmers: tuple, iterable default (31, 33, 35, 37)
+            kmer sizes to be sampled
+        Returns
+        -------
+        lfreq: int
+           largest frequency with > 1 kmer
+        """
+
+        if type(fa_file) == list:
+            fa_file = ' '.join(fa_file)
+
+        # how to sample fasta gene_clusters
+        ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
+        kmer_str = ','.join([str(i) for i in kmers])
+        nt_cmd = [ntcard_dir, '-t', '1', '-k', kmer_str, '-o', outfile, fa_file]
+        try:
+            subprocess.call(nt_cmd, stderr=sys.stdout)
+        except subprocess.CalledProcessError as e:
+            print('Running the ntCard command below exited with the following error message:\n')
+            print(' '.join(nt_cmd) + '\n')
+            print(e.stdout.decode('utf-8'))
+            sys.exit(1)
+        return self._calc_max(outfile)
+
+    @staticmethod
+    def _calc_max(outfile):
+        """
+        Reads output of ntCards data and returns the highest kmer frequency with more than one
+        appearance.
+
+        Parameters
+        ----------
+        outfile: str, path.PATH
+            path to file containing the output of ntCard
+
+        Returns
+        -------
+        lfreq: int
+            largest frequency with > 1 kmer
+        """
+        with open(outfile, 'r') as filein:
+            lfreq = 1
+            lines = filein.readlines()
+            lines.reverse()
+            # return lines
+            for line in lines:
+                kmer, freq, n = line.split('\t')
+                if int(n) > 1:
+                    return int(freq)
+            return lfreq
+
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-
-
