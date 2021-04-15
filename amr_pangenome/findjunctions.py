@@ -107,23 +107,48 @@ class FindJunctions:
             raise ValueError(f'passed kmer must be and odd number. {kmer} passed instead.')
 
         # if only one process, write directly to output file
+        # TODO: move to inside the temp folder
         if max_processes == 1:
             jct_outs = [outname]
         else:  # else have each process write to a temp jct file
             outdir = os.path.dirname(outname)
             jct_outs = [os.path.join(outdir, f'jct{i}.txt') for i in range(max_processes)]
+        processes = []
         # use multiprocessing to simulataneously process multiple gene clusters
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
-            # map gene cluster with new process
-            for jout, gene_cluster in zip(itertools.cycle(jct_outs), self._yield_gene_cluster()):
-                gene, tmp_dir = gene_cluster
-                f = executor.submit(self._run_single_cluster, tmp_dir, jout, filter_size, gene, kmer, outfmt)
-                f.result()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # os.chmod(tmp_dir, 0o755)
+            tp_outs = [os.path.join(tmp_dir, f'tpout{i}/fna_dir/') for i in range(max_processes)]
+            [os.makedirs(i) for i in tp_outs]
+            with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
+                # map gene cluster with new process
+                for pn, gene_cluster in zip(itertools.cycle(np.arange(max_processes)),
+                                            self._yield_gene_cluster(tmp_dir)):
+                    jout, tp_out = jct_outs[pn], tp_outs[pn]
+                    gene, fpaths = gene_cluster
+                    f = executor.submit(self._run_single_cluster, fpaths, jout,
+                                        filter_size, gene, kmer, outfmt, tp_out)
+                    # f.result()
+                    processes.append(f)
+                for futures in concurrent.futures.as_completed(processes):
+                    futures.result()
+        # TODO: Cat all the files together into the final output
 
-    # TODO: get rid of 'alleles_fna' dir
-    def _yield_gene_cluster(self, group=False):
+    def _yield_gene_cluster(self, direct, group=False):
         """
         Private method that generates and yeilds gene clusters from fasta data.
+
+        Parameters
+        ----------
+        direct: str, path.PATH
+              path to the directory where the fasta files will be saved
+        group: bool default False
+              whether to group the sequnces into a single fasta file
+        Yields
+        ------
+        rs: Bio.SeqRecord
+            the SeqRecord of the fasta file with pointer at the end of the gene cluster
+        fa_locs: list
+            list of fasta file(s) where the sequences of the genes in the gene cluster were written
         """
         parse_fa = SeqIO.parse(self.fna_file, 'fasta')
         rs = next(parse_fa)
@@ -140,31 +165,30 @@ class FindJunctions:
                 except StopIteration:  # end of file
                     break
 
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                fna_temp = os.path.join(tmp_dir, 'alleles_fna')
-                os.mkdir(fna_temp)
+            # fna_temp = os.path.join(tmp_dir, 'alleles_fna')
+            # os.mkdir(fna_temp)
 
-                # get all alleles of a gene cluster
-                rs = self.group_seq(parse_fa, gene, rs, fna_temp, group=group)
-                # yield this cluster to a process and move on to the next one
-                count += 1
-                yield gene, tmp_dir
+            # get all alleles of a gene cluster
+            cluster_res = self.group_seq(parse_fa, gene, rs, direct, group=group)
+            # yield this cluster to a process and move on to the next one
+            count += 1
+            if cluster_res:
+                rs, fa_locs = cluster_res
+                yield gene, fa_locs
 
-    def _run_single_cluster(self, tmp_dir, jct_out, filter_size, gene, kmer, outfmt):
+    def _run_single_cluster(self, fpaths, jct_out, filter_size, gene, kmer, outfmt, outdir):
         """
            Private method called by 'calc_junctions' to find junctions for a single gene cluster.
            This method finds junctions for all fasta files  in a dir with twopaco and graphjunctions.
            The results are written to the ouput file in jct format. All parameters described here are
            described in the parent 'calc_junctions' function.
         """
-        fna_temp = os.path.join(tmp_dir, 'alleles_fna')
-        fa_list = os.listdir(fna_temp)
-        fpaths = [os.path.join(fna_temp, i) for i in fa_list]
-        db_out = self.run_twopaco(fpaths, kmer, filter_size, tmp_dir)
-        graph_path = self.run_graphdump(db_out, kmer, outfmt, tmp_dir)
+
+        db_out = self.run_twopaco(fpaths, kmer, filter_size, outdir)
+        graph_path = self.run_graphdump(db_out, kmer, outfmt, outdir)
 
         # gather junctions for the gene junctions and write them to jct formatted file
-        junction_list, pos_list = self.get_junction_data(graph_path, fa_list)
+        junction_list, pos_list = self.get_junction_data(graph_path, fpaths)
         if len(junction_list) != len(pos_list):
             raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
         self.write_jct_file(junction_list, pos_list, jct_out)
@@ -195,23 +219,28 @@ class FindJunctions:
         ref_seq: SeqRecord
             The first SeqRecord object that doesn't contain the 'gene_name'
         """
+        fa_locs = []
+        if group:
+            fa_locs.append(os.path.join(tmpdir, gene_name + '.fa'))
+
         while re.search(r'_C\d+', ref_seq.id).group(0).replace('_', '') == gene_name:
             name = ref_seq.id
             faa = ref_seq.seq
 
             if group:
-                fa_loc = os.path.join(tmpdir, gene_name + '.fa')
+                fa_loc = fa_locs[0]
             else:
                 fa_loc = os.path.join(tmpdir, name + '.fa')
+                fa_locs.append(fa_loc)
 
             with open(fa_loc, 'a+') as fa:
                 fa.write('>{}\n{}\n'.format(name, faa))
 
             try:
                 ref_seq = next(fa_generator)
-            except StopIteration:
-                return
-        return ref_seq
+            except StopIteration:  # this will probably break the code
+                return None
+        return ref_seq, fa_locs
 
     # TODO: change outdir to outpath
     @staticmethod
@@ -237,15 +266,17 @@ class FindJunctions:
 
         db_out = os.path.join(outdir, 'debrujin.bin')
         two_paco_dir = os.path.join(ROOT_DIR, 'bin/twopaco')
-        tp_cmd = [two_paco_dir, '-k', str(kmer), '-f', str(filtersize), '-o', db_out, '-t', '8']
-        tp_cmd.extend(fpaths)
-        try:
-            subprocess.check_output(tp_cmd, stderr=subprocess.STDOUT)
-        except subprocess.CalledProcessError as e:
-            print('Running the TwoPaco command below exited with the following error message:\n')
-            print(' '.join(tp_cmd) + '\n')
-            print(e.stdout.decode('utf-8'))
-            sys.exit(1)
+        with tempfile.TemporaryDirectory() as tp_temp:
+            tp_cmd = [two_paco_dir, '-k', str(kmer), '-f', str(filtersize),
+                      '-o', db_out, '-t', '1', '--tmpdir', str(tp_temp)]
+            tp_cmd.extend(fpaths)
+            try:
+                subprocess.check_output(tp_cmd, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError as e:
+                print('Running the TwoPaco command below exited with the following error message:\n')
+                print(' '.join(tp_cmd) + '\n')
+                print(e.stdout.decode('utf-8'))
+                sys.exit(1)
         return db_out
 
     @staticmethod
@@ -270,6 +301,7 @@ class FindJunctions:
         -------
 
         """
+
         gd_dir = os.path.join(ROOT_DIR, 'bin/graphdump')
         gd_cmd = [gd_dir, '-f', outfmt, '-k', str(kmer), db_out]
         graph_path = os.path.join(outdir, 'graphdump.txt')
