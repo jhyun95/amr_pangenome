@@ -11,6 +11,7 @@ from scipy import sparse
 import concurrent.futures
 import itertools
 import numpy as np
+import fileinput
 
 sys.path.append('../')
 from amr_pangenome import ROOT_DIR  # noqa
@@ -61,6 +62,8 @@ class FindJunctions:
                 allele_freq[gene] = 1
         self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
 
+    # TODO the temporary jct files should be written in the tempdirectory, need to figure out how to implement
+    # that test before we can add that here.
     def calc_junctions(self, kmer=35, filter_size=34, outname='junctions.csv',
                        outfmt='group', max_processes=1, force=False):
         """
@@ -129,7 +132,15 @@ class FindJunctions:
                     processes.append(f)
                 for futures in concurrent.futures.as_completed(processes):
                     futures.result()
-        # TODO: Cat all the files together into the final output
+
+        if max_processes == 1:
+            return
+        # Cat all the files from mp together into the final output
+        jct_exists = [i for i in jct_outs if os.path.isfile(i)]
+        with open(outname, 'w') as fout, fileinput.input(jct_exists) as fin:
+            for line in fin:
+                fout.write(line)
+        [os.remove(i) for i in jct_exists]
 
     def _yield_gene_cluster(self, direct, group=False):
         """

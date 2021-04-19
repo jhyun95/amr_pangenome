@@ -166,16 +166,22 @@ def test_get_junction_data_single_cluster(redirect_temp, tmp_path):
             assert sorted(expect.readlines()) == sorted(output.readlines())
 
 
+jct_dir = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_jct.txt')
+
+
 @pytest.mark.slow
-def test_get_junction_data_multi_cluster(tmp_path):
+@pytest.mark.parametrize('args, outdir', [({'max_processes': 1}, jct_dir),
+                                          ({'max_processes': 4}, jct_dir)])
+def test_get_junction_data_multi_cluster(args, outdir, tmp_path):
+    """ Test the full run on fasta with multiple clusters with 1 and 4 cores"""
+
     fna_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
     fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
     out_path = os.path.join(tmp_path, fj.org + '_jct.csv')
-    fj.calc_junctions(kmer=5, outname=out_path)
+    fj.calc_junctions(outname=out_path, kmer=5,  **args)
 
     # don't check graphdump since thats overwritten with each gene cluster
-    expected_jct = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_jct.txt')
-    with open(expected_jct, 'r') as expect:
+    with open(outdir, 'r') as expect:
         with open(out_path, 'r') as output:
             assert sorted(expect.readlines()) == sorted(output.readlines())
 
