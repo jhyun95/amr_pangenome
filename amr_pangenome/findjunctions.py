@@ -107,17 +107,16 @@ class FindJunctions:
             raise ValueError(f'passed kmer must be and odd number. {kmer} passed instead.')
 
         # if only one process, write directly to output file
-        # TODO: move to inside the temp folder
         if max_processes == 1:
             jct_outs = [outname]
         else:  # else have each process write to a temp jct file
             outdir = os.path.dirname(outname)
             jct_outs = [os.path.join(outdir, f'jct{i}.txt') for i in range(max_processes)]
+
         processes = []
         # use multiprocessing to simulataneously process multiple gene clusters
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # os.chmod(tmp_dir, 0o755)
-            tp_outs = [os.path.join(tmp_dir, f'tpout{i}/fna_dir/') for i in range(max_processes)]
+            tp_outs = [os.path.join(tmp_dir, f'tpout{i}/') for i in range(max_processes)]
             [os.makedirs(i) for i in tp_outs]
             with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
                 # map gene cluster with new process
@@ -127,7 +126,6 @@ class FindJunctions:
                     gene, fpaths = gene_cluster
                     f = executor.submit(self._run_single_cluster, fpaths, jout,
                                         filter_size, gene, kmer, outfmt, tp_out)
-                    # f.result()
                     processes.append(f)
                 for futures in concurrent.futures.as_completed(processes):
                     futures.result()
@@ -151,10 +149,10 @@ class FindJunctions:
             list of fasta file(s) where the sequences of the genes in the gene cluster were written
         """
         parse_fa = SeqIO.parse(self.fna_file, 'fasta')
-        rs = next(parse_fa)
         count = 0
+        rs = next(parse_fa)
         while rs:  # iterate through the fasta file
-            if count >= 10:
+            if count >= 5:
                 break
             # get the next gene name, must be formatted as ORG_C000A0 where C is the gene cluster name
             gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
@@ -164,17 +162,15 @@ class FindJunctions:
                     continue
                 except StopIteration:  # end of file
                     break
-
-            # fna_temp = os.path.join(tmp_dir, 'alleles_fna')
-            # os.mkdir(fna_temp)
-
             # get all alleles of a gene cluster
-            cluster_res = self.group_seq(parse_fa, gene, rs, direct, group=group)
-            # yield this cluster to a process and move on to the next one
             count += 1
-            if cluster_res:
-                rs, fa_locs = cluster_res
-                yield gene, fa_locs
+            cluster_res = self.group_seq(parse_fa, gene, rs, direct, group=group)
+            rs, fa_locs = cluster_res
+            # yield this cluster to a process and move on to the next one
+            yield gene, fa_locs
+
+            if rs is None:  # end of file
+                return 0
 
     def _run_single_cluster(self, fpaths, jct_out, filter_size, gene, kmer, outfmt, outdir):
         """
@@ -183,12 +179,10 @@ class FindJunctions:
            The results are written to the ouput file in jct format. All parameters described here are
            described in the parent 'calc_junctions' function.
         """
-
         db_out = self.run_twopaco(fpaths, kmer, filter_size, outdir)
-        graph_path = self.run_graphdump(db_out, kmer, outfmt, outdir)
-
+        gd_out = self.run_graphdump(db_out, kmer, outfmt)
         # gather junctions for the gene junctions and write them to jct formatted file
-        junction_list, pos_list = self.get_junction_data(graph_path, fpaths)
+        junction_list, pos_list = self.get_junction_data(gd_out, fpaths)
         if len(junction_list) != len(pos_list):
             raise AssertionError(f'Number of positions and junctions are not equal for {gene}')
         self.write_jct_file(junction_list, pos_list, jct_out)
@@ -220,9 +214,10 @@ class FindJunctions:
             The first SeqRecord object that doesn't contain the 'gene_name'
         """
         fa_locs = []
+        write_mode = 'a+'
         if group:
             fa_locs.append(os.path.join(tmpdir, gene_name + '.fa'))
-
+            write_mode = 'w'
         while re.search(r'_C\d+', ref_seq.id).group(0).replace('_', '') == gene_name:
             name = ref_seq.id
             faa = ref_seq.seq
@@ -233,13 +228,14 @@ class FindJunctions:
                 fa_loc = os.path.join(tmpdir, name + '.fa')
                 fa_locs.append(fa_loc)
 
-            with open(fa_loc, 'a+') as fa:
+            with open(fa_loc, write_mode) as fa:
                 fa.write('>{}\n{}\n'.format(name, faa))
 
             try:
                 ref_seq = next(fa_generator)
             except StopIteration:  # this will probably break the code
-                return None
+                ref_seq = None
+                break
         return ref_seq, fa_locs
 
     # TODO: change outdir to outpath
@@ -279,8 +275,10 @@ class FindJunctions:
                 sys.exit(1)
         return db_out
 
+    # TODO: Capture the output to a variable that you return,
+    #  instead of writing to the file
     @staticmethod
-    def run_graphdump(db_out, kmer, outfmt, outdir):
+    def run_graphdump(db_out, kmer, outfmt):
         """
         Parse the twopaco output using the compiled graphdump module
         in the bin.
@@ -293,21 +291,16 @@ class FindJunctions:
            kmer size used in the twopaco run that generated the db_out file
         outfmt: str
            output format for the output file; currently only accepts 'group'
-        outdir: str
-           path to directory where the output file will be written. the output file
-           is called 'graphdump.txt'
-
         Returns
         -------
-
+        gd_out: str
+            captured stdout of the the graphdump call
         """
 
         gd_dir = os.path.join(ROOT_DIR, 'bin/graphdump')
         gd_cmd = [gd_dir, '-f', outfmt, '-k', str(kmer), db_out]
-        graph_path = os.path.join(outdir, 'graphdump.txt')
-        with open(graph_path, 'w') as gd_out:
-            subprocess.call(gd_cmd, stdout=gd_out, stderr=subprocess.STDOUT)
-        return graph_path
+        gd_out = subprocess.check_output(gd_cmd, stderr=subprocess.STDOUT)
+        return gd_out.decode('utf-8')  # convert to string
 
     @staticmethod
     def get_junction_data(graphdump_out, fa_list):
@@ -315,8 +308,8 @@ class FindJunctions:
         Read the output file from graphdump, and convert it to jct formatted sparse data.
         Parameters
         ----------
-        graphdump_out: str, pathlib.Path
-             path to the output file of graphdump; generated by run_graphdump with 'group' for
+        graphdump_out: str
+             captured stdout of the the graphdump call; generated by run_graphdump with 'group' for
              outfmt
         fa_list: Iterable
             iterable containing fasta file names used in the junctions calculations
@@ -324,20 +317,18 @@ class FindJunctions:
         -------
 
         """
-
-        fa_list = [os.path.splitext(i)[0] for i in fa_list]
+        fa_list = [os.path.splitext(os.path.basename(i))[0] for i in fa_list]
         junction_no = 0
         pos_data = []
         junction_row_idx = []
-        with open(graphdump_out, 'r') as graph_in:
-            for line in graph_in.readlines():
-                # each line represents a unique junction and the allele
-                for junction in line.split(';')[:-1]:  # last entry is \n
-                    allele, pos = junction.split()
-                    junction_id = fa_list[int(allele.strip())] + 'J' + str(junction_no)
-                    pos_data.append(pos)
-                    junction_row_idx.append(junction_id)
-                junction_no += 1
+        for line in [ln for ln in graphdump_out.splitlines() if ln]:  # remove blank lines
+            # each line represents a unique junction and the allele
+            for junction in line.split(';')[:-1]:  # last entry is \n
+                allele, pos = junction.split()
+                junction_id = fa_list[int(allele.strip())] + 'J' + str(junction_no)
+                pos_data.append(pos)
+                junction_row_idx.append(junction_id)
+            junction_no += 1
 
         return junction_row_idx, pos_data
 

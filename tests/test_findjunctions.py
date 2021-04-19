@@ -103,22 +103,20 @@ def test_run_twopaco_cmd_line(subprocess_checkoutput):
     assert db_out == 'tempdir/debrujin.bin'
 
 
-@mock.patch('amr_pangenome.findjunctions.subprocess.call')
-@mock.patch('builtins.open', new_callable=mock.mock_open)
-def test_run_graphdump_cmd_line(mock_open, subprocess_call):
-    subprocess_call.return_value = 0
-    mock_open.read_data = ''
-    graph_path = findjunctions.FindJunctions.run_graphdump('db_out', 35, 'outfmt',
-                                                           'outdir')
-    assert graph_path == 'outdir/graphdump.txt'
+def test_run_graphdump_cmd_line():
+    db_out = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_debrujin.bin')
+    output = findjunctions.FindJunctions.run_graphdump(db_out, 5, 'group')
+    assert output == '0 0; \n0 4; 1 4; \n0 7; 1 7; \n1 0; 2 0; \n1 2; 2 2; \n2 7; \n'
 
 
 def test_get_junction_data():
     fa_list = ['fa0.fna', 'fa1.fna', 'fa2.fna']
-    output = os.path.join(ROOT_DIR, 'tests/test_data/test_graphdump_output.txt')
-    junction_data, pos_data = findjunctions.FindJunctions.get_junction_data(output, fa_list)
-    assert pos_data == ['31', '31', '31', '50', '50']
-    assert junction_data == ['fa0J0', 'fa1J0', 'fa2J0', 'fa1J1', 'fa2J1']
+    input_file = os.path.join(ROOT_DIR, 'tests/test_data/test_graphdump_output.txt')
+    with open(input_file, 'r') as graphin:
+        data = '\n'.join(graphin.readlines())
+        junction_data, pos_data = findjunctions.FindJunctions.get_junction_data(data, fa_list)
+        assert pos_data == ['31', '31', '31', '50', '50']
+        assert junction_data == ['fa0J0', 'fa1J0', 'fa2J0', 'fa1J1', 'fa2J1']
 
 
 @mock.patch('builtins.open', new_callable=mock.mock_open)
@@ -160,20 +158,12 @@ def test_get_junction_data_single_cluster(redirect_temp, tmp_path):
     fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
     out_path = os.path.join(tmp_path, fj.org + '_jct.csv')
     fj.calc_junctions(kmer=5, outname=out_path)
-
-    # check if proper files were made
-    # expected_graph = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_graphdump.txt')
-    # output_graph = os.path.join(tmp_path, 'tpout0', 'graphdump.txt')
-    # # check the graphdump output
-    # with open(expected_graph, 'r') as expect:
-    #     with open(output_graph, 'r') as output:
-    #         assert ''.join(expect.readlines()) == ''.join(output.readlines())
-
+    print(out_path)
     # check the coo text output
     expected_jct = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_jct.txt')
     with open(expected_jct, 'r') as expect:
         with open(out_path, 'r') as output:
-            assert expect.readlines() == output.readlines()
+            assert sorted(expect.readlines()) == sorted(output.readlines())
 
 
 @pytest.mark.slow
@@ -187,7 +177,7 @@ def test_get_junction_data_multi_cluster(tmp_path):
     expected_jct = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_jct.txt')
     with open(expected_jct, 'r') as expect:
         with open(out_path, 'r') as output:
-            assert expect.readlines() == output.readlines()
+            assert sorted(expect.readlines()) == sorted(output.readlines())
 
 
 def test_make_strain_junction_df_direct_error():
