@@ -160,11 +160,8 @@ class FindJunctions:
             list of fasta file(s) where the sequences of the genes in the gene cluster were written
         """
         parse_fa = SeqIO.parse(self.fna_file, 'fasta')
-        count = 0
         rs = next(parse_fa)
         while rs:  # iterate through the fasta file
-            if count >= 5:
-                break
             # get the next gene name, must be formatted as ORG_C000A0 where C is the gene cluster name
             gene = re.search(r'_C\d+', rs.id).group(0).replace('_', '')
             if self.org + '_' + gene + 'A0' in self.single_alleles:
@@ -174,7 +171,6 @@ class FindJunctions:
                 except StopIteration:  # end of file
                     break
             # get all alleles of a gene cluster
-            count += 1
             cluster_res = self.group_seq(parse_fa, gene, rs, direct, group=group)
             rs, fa_locs = cluster_res
             # yield this cluster to a process and move on to the next one
@@ -286,8 +282,6 @@ class FindJunctions:
                 sys.exit(1)
         return db_out
 
-    # TODO: Capture the output to a variable that you return,
-    #  instead of writing to the file
     @staticmethod
     def run_graphdump(db_out, kmer, outfmt):
         """
@@ -432,6 +426,7 @@ class FindJunctions:
         """
         max_freq = []
         sampled = 0
+        prcoesses = []
         with tempfile.TemporaryDirectory() as tmp_dir:
             outname = os.path.join(tmp_dir, 'kmer.txt')
             if max_processes == 1:
@@ -443,15 +438,19 @@ class FindJunctions:
             with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
                 # map gene cluster with new process
                 for kout, gene_cluster in zip(itertools.cycle(kmer_outs), self._yield_gene_cluster(group=True)):
-                    gene, fa_tmp = gene_cluster
-                    flist = os.listdir(fa_tmp + '/alleles_fna/')
-                    fa_files = [os.path.join(fa_tmp + '/alleles_fna/', i) for i in flist]
-                    f = executor.submit(self._run_ntcard, fa_files, kout, kmers)
+                    gene, fpaths = gene_cluster  # returns gene name and path to fa files
+                    # flist = os.listdir(fa_tmp + '/alleles_fna/')
+                    # fa_files = [os.path.join(fa_tmp + '/alleles_fna/', i) for i in flist]
+                    f = executor.submit(self._run_ntcard, fpaths, kout, kmers)
+                    processes.append(f)
+
+                for futures in concurrent.futures.as_completed(processes):
                     lfreq = f.result()
                     max_freq.append(lfreq)
                     sampled += 1
                     if sampled >= sample:
                         return max_freq
+
 
         return max_freq
 
