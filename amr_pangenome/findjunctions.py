@@ -426,7 +426,6 @@ class FindJunctions:
         """
         max_freq = []
         sampled = 0
-        prcoesses = []
         with tempfile.TemporaryDirectory() as tmp_dir:
             outname = os.path.join(tmp_dir, 'kmer.txt')
             if max_processes == 1:
@@ -434,23 +433,21 @@ class FindJunctions:
             else:  # else have each process write to a temp out file
                 kmer_outs = [os.path.join(tmp_dir, f'kmer{i}.txt') for i in range(max_processes)]
 
+            processes = []
             # use multiprocessing to simulataneously process multiple gene clusters
             with concurrent.futures.ProcessPoolExecutor(max_workers=max_processes) as executor:
                 # map gene cluster with new process
-                for kout, gene_cluster in zip(itertools.cycle(kmer_outs), self._yield_gene_cluster(group=True)):
+                for kout, gene_cluster in zip(itertools.cycle(kmer_outs),
+                                              self._yield_gene_cluster(tmp_dir, group=True)):
                     gene, fpaths = gene_cluster  # returns gene name and path to fa files
-                    # flist = os.listdir(fa_tmp + '/alleles_fna/')
-                    # fa_files = [os.path.join(fa_tmp + '/alleles_fna/', i) for i in flist]
                     f = executor.submit(self._run_ntcard, fpaths, kout, kmers)
                     processes.append(f)
-
-                for futures in concurrent.futures.as_completed(processes):
-                    lfreq = f.result()
-                    max_freq.append(lfreq)
                     sampled += 1
                     if sampled >= sample:
-                        return max_freq
-
+                        break
+                for futures in concurrent.futures.as_completed(processes):
+                    lfreq = futures.result()
+                    max_freq.append(lfreq)
 
         return max_freq
 
