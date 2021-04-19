@@ -210,21 +210,32 @@ ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
 
 @pytest.mark.skip(reason='need to implement mock junction')
 @mock.patch('amr_pangenome.findjunctions.os.path.join')
-def test_run_nt_card_process_error(os_path_join):
+def test_run_nt_card_process_error(os_path_join, mock_findjunction):
     os_path_join.return_value = ntcard_dir
     # should fail since 'fail' is passed instead of an int or str(int)
     with pytest.raises(SystemExit) as pytest_wrapped_e:
         # noinspection PyTypeChecker
-        findjunctions.FindJunctions._run_ntcard('/file/doesnt/exist.fna',
+        findjunctions.FindJunctions._run_ntcard(mock_findjunction,
+                                                '/file/doesnt/exist.fna',
                                                 '/dev/null/out.txt')
     assert pytest_wrapped_e.type == SystemExit
     assert pytest_wrapped_e.value.code == 1
 
 
+multi_clster_fa_file = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_fasta.fna')
+
+
+@mock.patch('amr_pangenome.findjunctions.os.path.join')
+def test_run_nt_card(os_path_join, mock_findjunction, tmp_path):
+    os_path_join.return_value = ntcard_dir
+    outfile = tmp_path / 'out.txt'
+    freq = findjunctions.FindJunctions._run_ntcard(mock_findjunction, multi_clster_fa_file, outfile,
+                                                   kmers=(5,))
+    assert freq == 13
+
+
 def test_calc_max():
     filein = os.path.join(ROOT_DIR, 'tests/test_data/test_calc_max_data.txt')
     assert findjunctions.FindJunctions._calc_max(filein) == 41
-
-
 
 
