@@ -516,9 +516,14 @@ class FindJunctions:
             for line in lines:
                 try:
                     kmer, freq, n = line.split('\t')
-                except ValueError:
+                except ValueError:  # deal with blank lines
                     continue
                 if int(n) > 1:
+                    # this is due to an int overflow bug,
+                    # issue has been raised here:
+                    # github.com/bcgsc/ntCard/issues/48
+                    if int(n) > 2 ** 62:
+                        return 1
                     return int(freq)
             return lfreq
 
