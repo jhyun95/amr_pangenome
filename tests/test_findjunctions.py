@@ -20,6 +20,20 @@ def mock_findjunction():
     return mock_findjunction
 
 
+@pytest.fixture(scope='function')
+def fj_single_cluster():
+    fna_file = 'tests/test_data/test_single_gene_cluster_fasta.fna'
+    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
+    return fj
+
+
+@pytest.fixture(scope='function')
+def fj_multi_cluster():
+    fna_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
+    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
+    return fj
+
+
 @pytest.fixture(scope='module')
 def junctions():
     return ['A0J0', 'A1J0', 'A2J0', 'A1J1', 'A2J1']
@@ -151,14 +165,11 @@ def test_get_junction_data_even_kmer_value_error(mock_findjunction):
 
 @pytest.mark.slow
 @mock.patch('amr_pangenome.findjunctions.tempfile.TemporaryDirectory')
-def test_get_junction_data_single_cluster(redirect_temp, tmp_path):
+def test_get_junction_data_single_cluster(redirect_temp, tmp_path, fj_single_cluster):
 
     redirect_temp.return_value = tmp_path
-    fna_file = 'tests/test_data/test_single_gene_cluster_fasta.fna'
-    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
-    out_path = os.path.join(tmp_path, fj.org + '_jct.csv')
-    fj.calc_junctions(kmer=5, outname=out_path)
-    print(out_path)
+    out_path = os.path.join(tmp_path, fj_single_cluster.org + '_jct.csv')
+    fj_single_cluster.calc_junctions(kmer=5, outname=out_path)
     # check the coo text output
     expected_jct = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_jct.txt')
     with open(expected_jct, 'r') as expect:
@@ -172,13 +183,10 @@ jct_dir = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_jct.tx
 @pytest.mark.slow
 @pytest.mark.parametrize('args, outdir', [({'max_processes': 1}, jct_dir),
                                           ({'max_processes': 4}, jct_dir)])
-def test_get_junction_data_multi_cluster(args, outdir, tmp_path):
+def test_get_junction_data_multi_cluster(args, outdir, tmp_path, fj_multi_cluster):
     """ Test the full run on fasta with multiple clusters with 1 and 4 cores"""
-
-    fna_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
-    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
-    out_path = os.path.join(tmp_path, fj.org + '_jct.csv')
-    fj.calc_junctions(outname=out_path, kmer=5,  **args)
+    out_path = os.path.join(tmp_path, fj_multi_cluster.org + '_jct.csv')
+    fj_multi_cluster.calc_junctions(outname=out_path, kmer=5,  **args)
 
     # don't check graphdump since thats overwritten with each gene cluster
     with open(outdir, 'r') as expect:
@@ -237,5 +245,9 @@ def test_run_ntcard(os_path_join, mock_findjunction, tmp_path):
 def test_calc_max():
     filein = os.path.join(ROOT_DIR, 'tests/test_data/test_calc_max_data.txt')
     assert findjunctions.FindJunctions._calc_max(filein) == 41
+
+
+def test_calc_gldist():
+    assert findjunctions.FindJunctions.calc_gldist == [1, 2, 3, 4]
 
 
