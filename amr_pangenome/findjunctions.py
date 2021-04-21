@@ -221,10 +221,10 @@ class FindJunctions:
             The first SeqRecord object that doesn't contain the 'gene_name'
         """
         fa_locs = []
-        write_mode = 'a+'
+        write_mode = 'w'
         if group:
             fa_locs.append(os.path.join(tmpdir, gene_name + '.fa'))
-            write_mode = 'w'
+            write_mode = 'a+'
         while re.search(r'_C\d+', ref_seq.id).group(0).replace('_', '') == gene_name:
             name = ref_seq.id
             faa = ref_seq.seq
@@ -509,7 +509,7 @@ class FindJunctions:
             largest frequency with > 1 kmer
         """
         with open(outfile, 'r') as filein:
-            lfreq = 1
+            lfreq = 0
             lines = filein.readlines()
             lines.reverse()
             # return lines
@@ -521,6 +521,17 @@ class FindJunctions:
                 if int(n) > 1:
                     return int(freq)
             return lfreq
+
+    def calc_gldist(self):
+        glen_range = []
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for gene, fa_loc in self._yield_gene_cluster(tmp_dir, group=True):
+                glen = []
+                for rs in SeqIO.parse(fa_loc[0], 'fasta'):
+                    glen.append(len(rs.seq))
+                    print(rs.id, len(rs.seq))
+                glen_range.append(max(glen) - min(glen))
+        return glen_range
 
 
 if __name__ == '__main__':
