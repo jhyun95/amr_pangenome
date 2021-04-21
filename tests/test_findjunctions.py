@@ -247,7 +247,11 @@ def test_calc_max():
     assert findjunctions.FindJunctions._calc_max(filein) == 41
 
 
-def test_calc_gldist():
-    assert findjunctions.FindJunctions.calc_gldist == [1, 2, 3, 4]
+def test_calc_kmer(fj_multi_cluster):
+    assert fj_multi_cluster.calc_kmer(kmers=(5,)) == [13, 15]
+
+
+def test_calc_gldist(fj_multi_cluster):
+    assert fj_multi_cluster.calc_gldist() == [1, 0]
 
 

@@ -529,7 +529,6 @@ class FindJunctions:
                 glen = []
                 for rs in SeqIO.parse(fa_loc[0], 'fasta'):
                     glen.append(len(rs.seq))
-                    print(rs.id, len(rs.seq))
                 glen_range.append(max(glen) - min(glen))
         return glen_range
 
