@@ -411,7 +411,7 @@ class FindJunctions:
             coo_df.to_pickle(outfile, compression='gzip')
         return coo_df
 
-    def calc_kmer(self, kmers=(31, 33, 35, 37), max_processes=1, sample=1000):
+    def calc_kmer(self, kmers=(31, 33, 35, 37), max_processes=1, sample=10e6):
         """
         Sample gene clusters for kmer frequency distribution.
 
@@ -423,6 +423,12 @@ class FindJunctions:
             number of processes to use
         sample: int default 1000
             number of gene clusters to sample. The first n number of clusters are sampled
+        Return
+        ------
+        max_freq: list
+           list of maximum number of times a kmer is repeated in a gene cluster; length of
+           the list is equal to the number of gene clusters or sample parameter, whichever
+           is lower.
         """
         max_freq = []
         sampled = 0
@@ -472,18 +478,18 @@ class FindJunctions:
 
         if type(fa_file) == list:
             fa_file = ' '.join(fa_file)
-
-        # how to sample fasta gene_clusters
+        # TODO: figure out how to prevent ntcard from writing to stdoutdft
         ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
         kmer_str = ','.join([str(i) for i in kmers])
         nt_cmd = [ntcard_dir, '-t', '1', '-k', kmer_str, '-o', outfile, fa_file]
         try:
-            subprocess.call(nt_cmd, stderr=sys.stdout)
+            subprocess.check_call(nt_cmd, shell=False, stdout=subprocess.DEVNULL)
         except subprocess.CalledProcessError as e:
             print('Running the ntCard command below exited with the following error message:\n')
             print(' '.join(nt_cmd) + '\n')
             print(e.stdout.decode('utf-8'))
             sys.exit(1)
+
         return self._calc_max(outfile)
 
     @staticmethod
@@ -508,7 +514,10 @@ class FindJunctions:
             lines.reverse()
             # return lines
             for line in lines:
-                kmer, freq, n = line.split('\t')
+                try:
+                    kmer, freq, n = line.split('\t')
+                except ValueError:
+                    continue
                 if int(n) > 1:
                     return int(freq)
             return lfreq

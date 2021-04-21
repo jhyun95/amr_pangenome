@@ -226,7 +226,7 @@ multi_clster_fa_file = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_c
 
 
 @mock.patch('amr_pangenome.findjunctions.os.path.join')
-def test_run_nt_card(os_path_join, mock_findjunction, tmp_path):
+def test_run_ntcard(os_path_join, mock_findjunction, tmp_path):
     os_path_join.return_value = ntcard_dir
     outfile = tmp_path / 'out.txt'
     freq = findjunctions.FindJunctions._run_ntcard(mock_findjunction, multi_clster_fa_file, outfile,
