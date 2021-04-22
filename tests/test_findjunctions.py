@@ -248,10 +248,8 @@ def test_calc_max():
 
 
 def test_calc_kmer(fj_multi_cluster):
-    assert fj_multi_cluster.calc_kmer(kmers=(5,)) == [13, 1]
+    assert fj_multi_cluster.calc_kmer(kmers=(5,)) == [13]
 
 
 def test_calc_gldist(fj_multi_cluster):
     assert fj_multi_cluster.calc_gldist() == [1, 0]
-
-

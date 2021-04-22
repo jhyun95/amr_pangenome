@@ -453,6 +453,8 @@ class FindJunctions:
                         break
                 for futures in concurrent.futures.as_completed(processes):
                     lfreq = futures.result()
+                    if lfreq == -1:  # skip results from clusters that create rare ntcard bugs.
+                        continue
                     max_freq.append(lfreq)
 
         return max_freq
@@ -475,10 +477,9 @@ class FindJunctions:
         lfreq: int
            largest frequency with > 1 kmer
         """
-
         if type(fa_file) == list:
             fa_file = ' '.join(fa_file)
-        # TODO: figure out how to prevent ntcard from writing to stdoutdft
+        # TODO: figure out how to prevent ntcard from writing to stdout
         ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
         kmer_str = ','.join([str(i) for i in kmers])
         nt_cmd = [ntcard_dir, '-t', '1', '-k', kmer_str, '-o', outfile, fa_file]
@@ -489,7 +490,6 @@ class FindJunctions:
             print(' '.join(nt_cmd) + '\n')
             print(e.stdout.decode('utf-8'))
             sys.exit(1)
-
         return self._calc_max(outfile)
 
     @staticmethod
@@ -523,7 +523,7 @@ class FindJunctions:
                     # issue has been raised here:
                     # github.com/bcgsc/ntCard/issues/48
                     if int(n) > 2 ** 62:
-                        return 1
+                        return -1
                     return int(freq)
             return lfreq
 
