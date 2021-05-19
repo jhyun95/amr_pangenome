@@ -194,12 +194,6 @@ def test_get_junction_data_multi_cluster(args, outdir, tmp_path, fj_multi_cluste
             assert sorted(expect.readlines()) == sorted(output.readlines())
 
 
-def test_make_strain_junction_df_direct_error():
-    with pytest.raises(NotADirectoryError):
-        findjunctions.FindJunctions.make_junction_strain_df('jct_file', 'mock_df',
-                                                            outfile='/dev/null/junctions_df.pickle.gz')
-
-
 def test_make_junction_strain_df(tmp_path):
     jct_file = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_jct.txt')
     df_files = os.path.join(ROOT_DIR, 'tests/test_data/test_single_gene_cluster_allele_genome.pickle.gz')
@@ -213,25 +207,9 @@ def test_make_junction_strain_df(tmp_path):
     assert all(expected.eq(test_output))
 
 
-ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
-
-
-@pytest.mark.skip(reason='need to implement mock junction')
-@mock.patch('amr_pangenome.findjunctions.os.path.join')
-def test_run_nt_card_process_error(os_path_join, mock_findjunction):
-    os_path_join.return_value = ntcard_dir
-    # should fail since 'fail' is passed instead of an int or str(int)
-    with pytest.raises(SystemExit) as pytest_wrapped_e:
-        # noinspection PyTypeChecker
-        findjunctions.FindJunctions._run_ntcard(mock_findjunction,
-                                                '/file/doesnt/exist.fna',
-                                                '/dev/null/out.txt')
-    assert pytest_wrapped_e.type == SystemExit
-    assert pytest_wrapped_e.value.code == 1
-
-
 multi_clster_fa_file = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_fasta.fna')
 
+ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
 
 @mock.patch('amr_pangenome.findjunctions.os.path.join')
 def test_run_ntcard(os_path_join, mock_findjunction, tmp_path):
