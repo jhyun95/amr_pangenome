@@ -184,11 +184,11 @@ jct_dir = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_jct.tx
 @pytest.mark.parametrize('args, outdir', [({'max_processes': 1}, jct_dir),
                                           ({'max_processes': 4}, jct_dir)])
 def test_get_junction_data_multi_cluster(args, outdir, tmp_path, fj_multi_cluster):
-    """ Test the full run on fasta with multiple clusters with 1 and 4 cores"""
+    """ Test the full run on fasta with multiple gene clusters with 1 and 4 cores"""
     out_path = os.path.join(tmp_path, fj_multi_cluster.org + '_jct.csv')
     fj_multi_cluster.calc_junctions(outname=out_path, kmer=5,  **args)
 
-    # don't check graphdump since thats overwritten with each gene cluster
+    # don't check graphdump since that's overwritten with each gene cluster
     with open(outdir, 'r') as expect:
         with open(out_path, 'r') as output:
             assert sorted(expect.readlines()) == sorted(output.readlines())
@@ -210,7 +210,6 @@ def test_make_junction_strain_df(tmp_path):
 multi_clster_fa_file = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_fasta.fna')
 
 ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
-
 @mock.patch('amr_pangenome.findjunctions.os.path.join')
 def test_run_ntcard(os_path_join, mock_findjunction, tmp_path):
     os_path_join.return_value = ntcard_dir

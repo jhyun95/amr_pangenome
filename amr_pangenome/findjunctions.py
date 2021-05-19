@@ -12,7 +12,6 @@ import concurrent.futures
 import itertools
 import numpy as np
 import fileinput
-
 sys.path.append('../')
 from amr_pangenome import ROOT_DIR  # noqa
 
@@ -52,15 +51,11 @@ class FindJunctions:
             iterable containing unique allele names
         """
         # drop all genes with only one allele
-        allele_freq = {}
-        for idx in allele_names:
-            gene = re.search(r'_C\d+', idx).group(0).replace('_', '')
-
-            if gene in allele_freq:
-                allele_freq[gene] = allele_freq[gene] + 1
-            else:
-                allele_freq[gene] = 1
-        self.single_alleles = [self.org + '_' + i + 'A0' for i in allele_freq if allele_freq[i] == 1]
+        genes = [re.search(r'_C\d+', i).group(0).replace('_', '') for i in allele_names]
+        duplicate = {}
+        for idx in genes:
+            duplicate[idx] = idx in duplicate
+        self.single_alleles = [f'{self.org}_{i}A0' for i in duplicate if not duplicate[i]]
 
     # TODO the temporary jct files should be written in the tempdirectory, need to figure out how to implement
     # that test before we can add that here.
@@ -330,7 +325,13 @@ class FindJunctions:
             # each line represents a unique junction and the allele
             for junction in line.split(';')[:-1]:  # last entry is \n
                 allele, pos = junction.split()
-                junction_id = fa_list[int(allele.strip())] + 'J' + str(junction_no)
+                try:
+                    junction_id = fa_list[int(allele.strip())] + 'J' + str(junction_no)
+                except IndexError:
+                    print("RAN INTO ERROR:")
+                    print(fa_list)
+                    return ['jct_err'], [-1]
+
                 pos_data.append(pos)
                 junction_row_idx.append(junction_id)
             junction_no += 1
@@ -371,18 +372,16 @@ class FindJunctions:
             in the gene.
         """
 
-        outdir = os.path.dirname(outfile)
-        if not os.path.isdir(outdir):
-            raise NotADirectoryError(f'{outdir} does not exist')
         if not outfile.endswith('.gz'):
             outfile += outfile + '.gz'
+
         junction_list = []
         genomes_list = []
         jpos_list = []
-
         junction2num = {}
         num2junction = {}
         junction_no = 0
+
         # all of them have to be a number
         with open(jct_file, 'r') as res_in:
             for line in res_in.readlines():
