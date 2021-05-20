@@ -5,7 +5,7 @@ import os
 import pandas as pd
 from scipy import sparse
 
-init_args = ('CC8', '/path/to/file/Test.fna')
+init_args = ('CC8', '/path/to/file/Test.fna', '/path/to/file/Allele.pickle.gz')
 fa_file_target = 'amr_pangenome.findjunctions.FindJunctions.fna_file'
 single_allele_target = 'amr_pangenome.findjunctions.FindJunctions.get_single_alleles'
 
@@ -15,6 +15,7 @@ def mock_findjunction():
     mock_findjunction = mock.Mock(findjunctions.FindJunctions,
                                   wraps=findjunctions.FindJunctions)
     mock_findjunction.fna_file = '/dev/null/Test.fna'
+    mock_findjunction.allele_file = '/dev/null/Test.fna'
     mock_findjunction.org = 'Test'
     mock_findjunction.single_alleles = []
     return mock_findjunction
@@ -23,14 +24,18 @@ def mock_findjunction():
 @pytest.fixture(scope='function')
 def fj_single_cluster():
     fna_file = 'tests/test_data/test_single_gene_cluster_fasta.fna'
-    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
+    allele_file = 'tests/test_data/test_single_gene_cluster_allele_genome.pickle.gz'
+    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file),
+                                     os.path.join(ROOT_DIR, allele_file))
     return fj
 
 
 @pytest.fixture(scope='function')
 def fj_multi_cluster():
     fna_file = 'tests/test_data/test_multi_gene_cluster_fasta.fna'
-    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file))
+    allele_file = 'tests/test_data/test_single_gene_cluster_allele_genome.pickle.gz'
+    fj = findjunctions.FindJunctions('Test', os.path.join(ROOT_DIR, fna_file),
+                                     os.path.join(ROOT_DIR, allele_file))
     return fj
 
 

@@ -20,7 +20,7 @@ import sklearn.metrics, sklearn.model_selection
 import imblearn.ensemble
 import xgboost as xgb
 
-from . import mlrse, pangenome
+# from . import mlrse, pangenome
 from functools import reduce
 
 

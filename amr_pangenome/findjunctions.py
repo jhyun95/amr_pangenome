@@ -12,18 +12,18 @@ import concurrent.futures
 import itertools
 import numpy as np
 import fileinput
-sys.path.append('../')
 from amr_pangenome import ROOT_DIR  # noqa
-
+from amr_pangenome.mlgwas import sparse_arrays_to_sparse_matrix
 
 # TODO: write function for removing sentinel and convergent bifurcation junctions
 class FindJunctions:
 
-    def __init__(self, org, fna_file, sorted_fna=True):
+    def __init__(self, org, fna_file, allele_file, sorted_fna=True):
 
         # get all the required files
         self._org = org
         self._fna_file = fna_file
+        self._allele_file = allele_file
         # TODO: if the fasta file is not already sorted, sort now
         if not sorted_fna:
             pass
@@ -41,6 +41,10 @@ class FindJunctions:
     @property
     def org(self):
         return self._org
+
+    @property
+    def allele_file(self):
+        return self._allele_file
 
     def get_single_alleles(self, allele_names):
         """
@@ -535,6 +539,8 @@ class FindJunctions:
                     glen.append(len(rs.seq))
                 glen_range.append(max(glen) - min(glen))
         return glen_range
+
+
 
 
 if __name__ == '__main__':

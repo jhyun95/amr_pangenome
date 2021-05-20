@@ -8,6 +8,4 @@ Created on Fri Mar 13 12:03:57 2020
 """
 
 from pathlib import Path
-
-
 ROOT_DIR = Path(__file__).parent.parent.absolute()
