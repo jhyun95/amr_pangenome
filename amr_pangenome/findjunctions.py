@@ -15,18 +15,44 @@ import fileinput
 from amr_pangenome import ROOT_DIR  # noqa
 from amr_pangenome.mlgwas import sparse_arrays_to_sparse_matrix
 
+
 # TODO: write function for removing sentinel and convergent bifurcation junctions
 class FindJunctions:
 
     def __init__(self, org, fna_file, allele_file, sorted_fna=True):
+        """
+        Object to keep track of all the data files needed to calculate junctions from allele by genome data.
+
+        Parameters
+        ----------
+        org: str
+            name of the organism to be used in allele and junction name
+        fna_file: str or path.PATH
+            path to fasta file containing the nuc sequence of the gene clusters
+        allele_file: str or path.PATH
+            path to the file containing the allele by genome dataframe; must be pickled data
+        sorted_fna: bool
+           whether fasta file is already sorted. If false, the fasta file will be sorted by sequence id. Default True
+        """
 
         # get all the required files
         self._org = org
         self._fna_file = fna_file
         self._allele_file = allele_file
+
+        # initialize other attributes that will be filled in later
+        # TODO: make getters and setters for these attributes so they can't be messed with.
+        self.df_alleles = None
+        self.uniq_genomes = None
+        self.alleles = None
+        self.genomes = None
+        self.df_jct = None
+        self.jct_path = None
+        self.junctions2num = None
+
         # TODO: if the fasta file is not already sorted, sort now
         if not sorted_fna:
-            pass
+            raise NotImplementedError('Coming soon')
 
         # genes with single alleles are skipped during expensive junction search
         self.single_alleles = []
@@ -352,68 +378,6 @@ class FindJunctions:
             for jct, pos in zip(junction_list, pos_list):
                 out.write(f'{jct},{pos}\n')
 
-    @staticmethod
-    def make_junction_strain_df(jct_file, df_alleles, savefile=False,
-                                outfile='junction_df.pickle.gz'):
-        """
-        Creates junction by genome dataframe from jct data and allele by genome data.
-
-        Parameters
-        ----------
-        jct_file: str, path.PATH
-            path to the junction file; junction files have format <jct_number>, <jct_position>
-        df_alleles: pandas.DataFrame
-            pandas sparse dataframe containing binary alleles by genome data
-        savefile: bool, default False
-            whether to save jct data by genome dataframe
-        outfile: str, path.PATH, default 'junction_df.pickle.gz'
-            path to file where the output will be saved if savefile = True.
-
-        Returns
-        -------
-        jct_df: pd.DataFrame
-            sparse dataframe containing junction by genome data. The values are junction positions
-            in the gene.
-        """
-
-        if not outfile.endswith('.gz'):
-            outfile += outfile + '.gz'
-
-        junction_list = []
-        genomes_list = []
-        jpos_list = []
-        junction2num = {}
-        num2junction = {}
-        junction_no = 0
-
-        # all of them have to be a number
-        with open(jct_file, 'r') as res_in:
-            for line in res_in.readlines():
-                name, jpos = line.split(',')
-                allele_name = name[:name.rfind('J')]  # clip the junction number
-                genomes = df_alleles.loc[allele_name].dropna().index
-                genomes_list.extend(genomes)
-                jpos_list.extend([int(jpos)] * len(genomes))
-                junction_list.extend([name] * len(genomes))
-
-                junction2num.update({name: junction_no})
-                num2junction.update({junction_no: name})
-                junction_no += 1
-
-        num2genome = dict(zip(range(df_alleles.shape[0]), df_alleles.columns))
-        genome2num = dict(zip(df_alleles.columns, range(df_alleles.shape[0])))
-
-        rows = [junction2num[i] for i in junction_list]
-        cols = [genome2num[i] for i in genomes_list]
-
-        # convert from COO format to sparse dataframes, and merge duplicate indices
-        coo_mat = sparse.coo_matrix((jpos_list, (rows, cols)))
-        coo_df = pd.DataFrame.sparse.from_spmatrix(coo_mat).astype(pd.SparseDtype('int64', np.nan))
-        coo_df.rename(columns=num2genome, index=num2junction, inplace=True)
-        if savefile:
-            coo_df.to_pickle(outfile, compression='gzip')
-        return coo_df
-
     def calc_kmer(self, kmers=(31, 33, 35, 37), max_processes=1, sample=10e6):
         """
         Sample gene clusters for kmer frequency distribution.
@@ -540,7 +504,146 @@ class FindJunctions:
                 glen_range.append(max(glen) - min(glen))
         return glen_range
 
+    @staticmethod
+    def _get_slices(df, allele):
+        """
+        Helper function to find all the alleles in the junction.
 
+        Parameter
+        ---------
+        df: pandas.Series
+            Series containing the alleles, must be sorted
+        allele: str
+            name of allele to find
+
+        Returns
+        -------
+        tuple of 2 ints
+            position of the first and last appearance of allele in the Series
+        """
+        return df.allele.searchsorted(allele, 'left'), df.allele.searchsorted(allele, 'right')
+
+    def _yield_genome_junction(self):
+        """
+        Finds all the junctions associated with the given genome. Yields data for one genome at a time.
+
+        Parameters
+        ----------
+        gen: int
+            number associated with the genome to search
+        Yields
+        -------
+        tuple of arrays
+           first array contains the all junctions present in the genomes, second array contains the junctions
+           position within the corresponding allele.
+        """
+        for gen in np.arange(self.df_alleles.shape[1] - 1):
+            matched_idx = np.where(self.genomes == gen)[0]
+            matched_alleles_num = [self.alleles[i] for i in matched_idx]
+            # print(f'SHAPE OF DF_ALLELES: {self.df_alleles.shape}')
+            matched_alleles = self.df_alleles.index[matched_alleles_num]
+            slices = set([self._get_slices(self.df_jct, i) for i in matched_alleles])
+            if len(slices) == 0:  # no matches found for the genome
+                print(f'Skipping genome {gen}, no matches found')
+                return set(), set()
+            matched_df = self.df_jct.iloc[np.r_.__getitem__(tuple([slice(i, j) for i, j in slices]))]
+            matched_junction = np.array([self.junctions2num[i] for i in matched_df.jct.values])
+            yield matched_junction, matched_df.pos.values
+
+    def _make_memory_mtx(self, shape):
+        """
+        Creates a csc formatted junctions by genome sparse matrix.
+
+        Parameters
+        ----------
+        shape: tuple
+            tuple specifying the shape of the csc matrix
+        """
+        indices_list = []
+        data_list = []
+        indptr = np.zeros(shape[1] + 1, dtype=int)
+        n_total = 0
+
+        for doc_num, (cur_indices, cur_data) in enumerate(self._yield_genome_junction()):
+            if len(cur_indices) == 0:
+                continue
+            n_cur = len(cur_indices)
+            # n_prev = n_total
+            n_total += n_cur
+            indices_list.append(cur_indices)
+            data_list.append(cur_data)
+            indptr[doc_num + 1] = n_total
+        indices = np.concatenate(indices_list)
+        data = np.concatenate(data_list)
+        return sparse.csc_matrix((data, indices, indptr), shape=shape)
+
+    def _load_dfalleles(self):
+        """
+        Extracts all the data from df_alleles that are needed for creating junction by genome data.
+        """
+        # load the allele by genome file
+        # with open(self.allele_file, 'rb') as f:
+        #     df_alleles = pk5.load(f)
+        self.df_alleles = pd.read_pickle(self.allele_file).astype('float')
+        # self.df_alleles = df_alleles
+        print(self.df_alleles.shape)
+        # drop single alleles, i.e. gene cluster with no detected mutations
+        self.df_alleles = self.df_alleles.drop(self.single_alleles)
+
+        # num2genome = dict(zip(np.arange(df_alleles.shape[1]), df_alleles.columns))
+        # allele2num = dict(zip(df_alleles.index, np.arange(df_alleles.shape[0])))
+
+        # get alleles, genomes pairs, genomes[i] contains alleles[i]
+        self.alleles, self.genomes, _ = sparse.find(sparse_arrays_to_sparse_matrix(self.df_alleles))
+        self.uniq_genomes = np.unique(self.genomes)
+
+    def _load_dfjunction(self, jct_path):
+        """
+        Extracts all the data from df_junctions that are needed for creating junction by genome data.
+        """
+        self.jct_path = jct_path
+        freq_thresh = 0.01
+        self.df_jct = pd.read_csv(self.jct_path, header=None, names=['junction', 'pos'])
+
+        # drop junctions with low frequency
+        self.df_jct['jct'] = self.df_jct.junction.map(lambda name: name[:name.rfind('A')] + name[name.rfind('J'):])
+        freq = self.df_jct.jct.value_counts() / len(self.genomes)
+        low_freq = np.where(freq.values < freq_thresh)
+        self.df_jct = self.df_jct.drop(low_freq[0])  # np.where returns two arr
+        self.df_jct = self.df_jct.reset_index(drop=True)
+
+        self.df_jct['allele'] = self.df_jct.junction.apply(lambda name: name[:name.rfind('J')])
+        self.df_jct.sort_values(['allele'], inplace=True)
+        self.junctions2num = dict(zip(self.df_jct.jct.unique(), np.arange(len(self.df_jct))))
+
+    def make_jct_mtx(self, jct_path, freq_thresh=0.01):
+        """
+        Convert output of find junctions to junctions by genome sparse matrix where the value is the position
+        of the junction in the corresponding gene in the genome.
+
+        Parameters
+        ----------
+        jct_path: str, path.PATH
+            path to the junctions file, output on findjunction function
+        freq_thresh: float
+            frequency threshold to keep a junction. If junction frequency < than threshold it will
+            be dropped. Must be in range [0, 1).
+
+        Returns
+        -------
+        csc: scipy.sparse.csc_matrix
+            csc sparse matrix with jct and position of the junction in the corresponding gene in the genome
+        """
+
+        if not 0 <= freq_thresh < 1:
+            raise ValueError(f'freq_thresh must be in range [0, 1). {freq_thresh} passed instead.')
+
+        if not self.df_alleles:
+            self._load_dfalleles()
+
+        self._load_dfjunction(jct_path)  # load junction data
+        mtx_shape = (len(self.df_jct.jct.unique()), len(self.uniq_genomes))
+        return self._make_memory_mtx(mtx_shape)
 
 
 if __name__ == '__main__':

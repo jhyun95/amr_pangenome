@@ -213,8 +213,9 @@ def test_make_junction_strain_df(tmp_path):
 
 
 multi_clster_fa_file = os.path.join(ROOT_DIR, 'tests/test_data/test_multi_gene_cluster_fasta.fna')
-
 ntcard_dir = os.path.join(ROOT_DIR, 'bin/ntcard')
+
+
 @mock.patch('amr_pangenome.findjunctions.os.path.join')
 def test_run_ntcard(os_path_join, mock_findjunction, tmp_path):
     os_path_join.return_value = ntcard_dir
