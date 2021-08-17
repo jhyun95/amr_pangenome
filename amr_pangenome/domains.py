@@ -273,7 +273,8 @@ def compute_domain_entropy_percentiles(positional_entropies, df_all_domains):
     -------
     df_domains_ext : pd.DataFrame
         Copy of df_all_domains limited to relevant gene clusters, with
-        an additional column "entropy_percentile" described above.
+        additional column "entropy_percentile" described above and
+        "mean entropy" (average entropy by position along domain)
     df_domain_percentiles : pd.DataFrame
         A (domain x gene cluster) table with entropy percentiles.
         Contains NaN for gene clusters missing a given domain. 
@@ -284,7 +285,8 @@ def compute_domain_entropy_percentiles(positional_entropies, df_all_domains):
     domain_by_gene_percentiles = {ipr_acc:{} for ipr_acc in domains}
     
     selected_cols = ['ipr_acc','adj_start','adj_stop','gene_cluster']
-    domain_percentiles = []; domain_by_gene = {}
+    domain_mean_entropies = []; domain_percentiles = []
+    domain_by_gene = {}
     for row in df_domains.loc[:,selected_cols].itertuples():
         i, ipr_acc, adj_start, adj_stop, gene_cluster = row
         entropy = positional_entropies[gene_cluster]
@@ -293,6 +295,7 @@ def compute_domain_entropy_percentiles(positional_entropies, df_all_domains):
         domain_length = adj_stop - adj_start + 1 # inclusive bounds, +1
         domain_entropy = entropy[adj_start-1:adj_stop] # entropy is 0-indexed
         mean_domain_entropy = np.mean(domain_entropy)
+        domain_mean_entropies.append(mean_domain_entropy)
         
         ''' Compute percentile of domain average entropy against all
             subsequence of the same length in the protein '''
@@ -305,7 +308,9 @@ def compute_domain_entropy_percentiles(positional_entropies, df_all_domains):
         domain_by_gene_percentiles[ipr_acc][gene_cluster] = percentile
 
     ''' Return percentiles and collapsed domain x gene x percentile table '''
-    df_domains_ext = df_domains.assign(entropy_percentile=domain_percentiles)
+    df_domains_ext = df_domains.assign(
+        entropy_percentile=domain_percentiles,
+        mean_entropy=domain_mean_entropies)
     df_domain_percentiles = pd.DataFrame.from_dict(domain_by_gene_percentiles, orient='index')
     return df_domains_ext, df_domain_percentiles
 

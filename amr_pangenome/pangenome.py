@@ -1678,6 +1678,84 @@ def extract_annotations(genome_gffs, allele_name_file, annotations_out,
         os.remove(tmp_out)
     else: 
         shutil.move(tmp_out, annotations_out)
+        
+
+def extract_dominant_alleles(allele_table, allele_faa_file, dominant_out):
+    '''
+    Extracts the most common allele for each gene from an allele x genome table.
+    
+    Parameters
+    ----------
+    allele_table : str or pd.DataFrame
+        DataFrame or path to DataFrame with allele x genome information.
+        Accepts .pickle files (for sparse columns).
+    allele_faa_file : str
+        Path to FAA file with all allele sequences
+    dominant_out : str
+        Path to output dominant allele sequences
+        
+    Returns
+    -------
+    df_dominant : pd.DataFrame
+        DataFrame with columns for gene, dominant allele,
+        total gene count, and dominant allele count
+    '''
+    def allele_to_gene(allele):
+        terms = breakdown_feature_name(allele)
+        return terms[0] + '_' + terms[1] + str(terms[2])
+    
+    ''' Setting up allele table '''
+    print 'Setting up allele table...'
+    if type(allele_table) == str:
+        df_alleles = pd.read_pickle(allele_table)
+    else:
+        df_alleles = allele_table
+    
+    ''' Identifying dominant alleles '''
+    print 'Identifying dominant alleles...'
+    df_counts = pd.DataFrame(df_alleles.fillna(0).sum(axis=1), columns=['count'])
+    df_counts['gene'] = df_counts.index.map(allele_to_gene)
+    dominant_alleles = [] # (gene, allele) pairs
+    current_gene = ''; current_allele = ''; 
+    current_counts = [0,0] # gene count, allele count
+    for row in df_counts.itertuples(name=None):
+        allele, count, gene = row
+        if gene != current_gene: # new gene encountered
+            if current_counts[0] > 0:
+                dominant_alleles.append(
+                    (current_gene, current_allele, current_counts[0], current_counts[1]))
+            current_gene = gene; current_allele = allele; current_counts = [count, count]
+        else: # continuing gene
+            if count > current_counts[1]: # more common allele encountered
+                current_allele = allele; current_counts[1] = count
+            current_counts[0] += count
+    if current_counts[0] > 0: # last entry
+        dominant_alleles.append(
+            (current_gene, current_allele, current_counts[0], current_counts[1]))
+    
+    ''' Formatting dominant allele output '''
+    df_dominant = pd.DataFrame(dominant_alleles, 
+        columns=['gene', 'dominant_allele', 'gene_count', 'allele_count'])
+    df_dominant = df_dominant.set_index('gene')
+    dominant_alleles = set(df_dominant.dominant_allele.values)
+    print 'Found dominant alleles', df_dominant.shape, len(dominant_alleles)
+    
+    ''' Extracting dominant allele sequences '''
+    print 'Exportint dominant alleles...',
+    alleles_written = 0
+    with open(allele_faa_file, 'r') as f_allele:
+        with open(dominant_out, 'w+') as f_dom:
+            for line in f_allele:
+                if line[0] == '>': # header line
+                    if line[1:].strip() in dominant_alleles: # header for dominant allele
+                        f_dom.write(line); write_seq = True
+                        alleles_written += 1
+                    else: # header for non-dominant allele
+                        write_seq = False
+                elif write_seq: # sequence for dominant allele
+                    f_dom.write(line)
+    print alleles_written
+    return df_dominant
     
 
 def load_sequences_from_fasta(fasta, header_fxn=None, seq_fxn=None, filter_fxn=None):
