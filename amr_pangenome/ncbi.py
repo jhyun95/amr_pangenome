@@ -148,9 +148,16 @@ def download_ncbi_assemblies_using_datasets(
                 print 'Processing downloaded files...'
                 for acc in batch_accs:
                     acc_dir = tmpdir + 'ncbi_dataset/data/' + acc + '/'
-                    if os.path.isdir(acc_dir):
+                    acc_dir_new = outdir + acc + '/'
+                    if os.path.exists(acc_dir_new):
+                        if len(os.listdir(acc_dir_new)) == 0:
+                            os.rmdir(acc_dir_new)
+                        else:
+                            print 'ERROR: Output directory exists and is non-empty, skipping', acc
+                            print acc_dir_new
+                            print os.listdir(acc_dir_new)
+                    if os.path.isdir(acc_dir) and (not os.path.exists(acc_dir_new)):
                         shutil.move(acc_dir, outdir)
-                        acc_dir_new = outdir + acc + '/'
                         if os.path.exists(acc_dir_new + 'sequence_report.jsonl'): # remove sequence report
                             os.remove(acc_dir_new + 'sequence_report.jsonl')
                         fna_files = filter(lambda x: x.endswith('.fna'), os.listdir(acc_dir_new))
@@ -168,13 +175,9 @@ def download_ncbi_assemblies_using_datasets(
                             print 'No FNAs downloaded:', acc
 
                 ''' Remove temporary files '''
-                os.remove(tmpdir + 'README.md')
-                os.remove(tmpdir + 'ncbi_dataset.zip')
-                os.remove(tmpdir + 'ncbi_dataset/data/assembly_data_report.jsonl')
-                os.remove(tmpdir + 'ncbi_dataset/data/dataset_catalog.json')
-                os.rmdir(tmpdir + 'ncbi_dataset/data/')
-                os.rmdir(tmpdir + 'ncbi_dataset/')
-            
+                shutil.rmtree(tmpdir)
+                os.mkdir(tmpdir)
+
         os.rmdir(tmpdir)
     else:
         print 'Nothing to download, aborting'

@@ -83,7 +83,8 @@ def add_probable_hits(df_aro, df_prob, organism, print_additions=False):
 
 def generate_probable_hits_from_annotations(df_aro, annotations_file,
         exclude=['hypothetical protein'], check_drug_mentions=True, 
-        G_aro=None, aro_names={}, manual_annots={}, ignore_case=True):
+        G_aro=None, aro_names={}, drug_to_aro={}, manual_annots={}, 
+        ignore_case=True):
     '''
     Attempts to identify probable AMR-associated features by identifying
     features with identical generic annotations to features flagged by CARD/RGI, 
@@ -109,6 +110,8 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
     aro_names : dict
         AROs-annotations map, from construct_aro_to_drug_network(). Used only
         if check_drug_mentions is True and G_aro is provided (default {})
+    drug_to_aro : dict
+        drug-ARO map, for adding additional search terms (default {})
     manual_annots : dict
         Exact phrases in annotations to look for in specific drugs or drug classes, 
         provided as {drug : [iterable of exact phrases}. Default {}.
@@ -178,6 +181,13 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
                                 class_terms.append(drug_class)
                 search_terms[drug] += class_terms
                 
+    ''' Adding known drug-ARO mappings '''
+    for drug, aro in drug_to_aro.items():
+        if drug in drugs_of_interest:
+            if not drug in search_terms:
+                search_terms[drug] = []
+            search_terms[drug].append(aro_names[aro])
+                
     ''' Adding manually curated terms '''
     for drug in filter(lambda x: x in drugs_of_interest, manual_annots.keys()):
         if not drug in search_terms:
@@ -232,7 +242,8 @@ def generate_probable_hits_from_annotations(df_aro, annotations_file,
     return df_prob
 
 
-def run_rgi(fasta_in, rgi_out, rgi_args={'-a':'DIAMOND', '-n':1}, clean_headers=True):
+def run_rgi(fasta_in, rgi_out, rgi_args={'-a':'DIAMOND', '-n':1}, 
+            rgi_path='rgi', clean_headers=True):
     ''' 
     RGI wrapper for FNA (contig) or FAA (protein) files. Optionally cleans
     files up (needed for some PATRIC FAA files where headers contain
@@ -263,7 +274,7 @@ def run_rgi(fasta_in, rgi_out, rgi_args={'-a':'DIAMOND', '-n':1}, clean_headers=
         fasta = fasta_in
     
     mode = 'contig' if fasta_in[-4:].upper() == '.FNA' else 'protein'
-    args = ['rgi', 'main', '-i', fasta, '-o', rgi_out, '-t', mode]
+    args = [rgi_path, 'main', '-i', fasta, '-o', rgi_out, '-t', mode]
     for key, value in rgi_args.items():
         args += [key, str(value)]
     print ' '.join(args)
@@ -273,7 +284,7 @@ def run_rgi(fasta_in, rgi_out, rgi_args={'-a':'DIAMOND', '-n':1}, clean_headers=
         os.remove(fasta_tmp)
 
         
-def build_resistome(rgi_txt, drugs, G_aro, skip_loose=True):
+def build_resistome(rgi_txt, drugs, G_aro, skip_loose=True, return_path_lengths=False):
     '''
     Processes the generated txt file after running RGI on a non-redundant
     CDS pan-genome, as described by df_alleles. Yields a table with all RGI-detected
@@ -290,6 +301,8 @@ def build_resistome(rgi_txt, drugs, G_aro, skip_loose=True):
         ARO network for linking AMR genes to drugs, from construct_aro_to_drug_network()
     skip_loose : bool
         If True, skips Loose hits from RGI (default True)
+    return_path_lengths : bool
+        If True, df_aro has shortest path lengths instead of binary values (default False)
         
     Returns
     -------
@@ -320,7 +333,11 @@ def build_resistome(rgi_txt, drugs, G_aro, skip_loose=True):
         for drug, drug_aro in drugs.items():
             is_related = nx.has_path(G_aro, 'ARO:' + str(aro), drug_aro)
             if is_related: # allele/ARO confers resistance
-                allele_to_drug[allele][drug] = 1
+                if return_path_lengths:
+                    path_length = len(nx.shortest_path(G_aro, 'ARO:' + str(aro), drug_aro))
+                    allele_to_drug[allele][drug] = path_length
+                else:
+                    allele_to_drug[allele][drug] = 1
     
     ''' Format into DataFrame '''
     aro_alleles = sorted(list(allele_to_drug.keys()))
