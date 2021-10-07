@@ -644,6 +644,80 @@ def gwas_fisher_exact(df_features, df_labels, null_shuffle=False, report_rate=10
     return df_output
 
 
+def contingency_tables_from_sparse(sp_features, target, batch_size=10000):
+    '''
+    Computes contigency tables (TPs, FPs, FNs, TNs) between
+    all features in sparse matrix format and a target vector.
+    
+    Parameters
+    ----------
+    sp_features : scipy.sparse.spmatrix
+        Binary feature x sample table in sparse format.
+    target : np.array
+        Binary target vector for samples
+    batch_size : int
+        Max batch of features to densify at any time (default 10000)
+
+    Returns
+    -------
+    contingency : np.array (n_features, 4)
+        Array with TPs, FPs, FNs, TNs per feature as columns
+    '''
+    data = sp_features.tocsr()
+    n_features, n_samples = data.shape
+    positives = float(target.sum())
+    negatives = 1.0 - n_samples
+    positive_rate = positives / float(n_samples)
+    contingency = np.zeros((n_features, 4))
+    batch_target = np.tile(target, (batch_size,1))
+    for i in np.arange(0,data.shape[0],batch_size):
+        batch_features = np.array(data[i:i+batch_size,:].todense())
+        if batch_features.shape[0] != batch_size:
+            batch_target = np.tile(target, (batch_features.shape[0],1))
+        feature_incidence = batch_features.sum(axis=1)
+        TPs = np.logical_and(batch_features, batch_target).sum(axis=1)
+        FPs = feature_incidence - TPs
+        FNs = positives - TPs
+        TNs = n_samples - TPs - FPs - FNs
+        contingency[i:i+batch_features.shape[0], 0] = TPs
+        contingency[i:i+batch_features.shape[0], 1] = FPs
+        contingency[i:i+batch_features.shape[0], 2] = FNs
+        contingency[i:i+batch_features.shape[0], 3] = TNs
+    return contingency
+
+
+def adjusted_lor(contingency):
+    ''' 
+    Computes adjusted LORs (log2 odds ratio) from contingency tables 
+    https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1007608
+    '''
+    TPs = contingency[:,0]; FPs = contingency[:,1]
+    FNs = contingency[:,2]; TNs = contingency[:,3]
+    PRs = np.divide(TPs + FNs, contingency.sum(axis=1, dtype='float'))
+    NRs = 1.0 - PRs
+    numerator = np.multiply(TPs + PRs, TNs + NRs)
+    denominator = np.multiply(FPs + NRs, FNs + PRs)
+    return np.log2(np.divide(numerator, denominator))
+
+
+def binary_mutual_information(contingency):
+    '''
+    Computes mutual information between binary variables 
+    from contignency tables.
+    '''
+    n = contingency.sum(axis=1).astype(float)
+    rates = contingency / n[:,np.newaxis]
+    P11s = rates[:,0]; P10s = rates[:,1]
+    P01s = rates[:,2]; P00s = rates[:,3]
+    PXs = P11s + P10s; PYs = P11s + P01s
+    log_nonzero = lambda x: np.log(x, out=np.zeros_like(x), where=(x!=0))
+    MIs = np.multiply(P11s, log_nonzero(P11s / np.multiply(PXs, PYs)))
+    MIs+= np.multiply(P10s, log_nonzero(P10s / np.multiply(PXs, 1.0-PYs)))
+    MIs+= np.multiply(P01s, log_nonzero(P01s / np.multiply(1.0-PXs, PYs)))
+    MIs+= np.multiply(P00s, log_nonzero(P00s / np.multiply(1.0-PXs, 1.0-PYs)))
+    return MIs
+    
+
 def expand_block_features(df_weights, block_features):
     '''
     Expands a block x column DataFrame to a feature x column DataFrame, 
