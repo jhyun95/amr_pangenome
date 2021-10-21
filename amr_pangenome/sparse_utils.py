@@ -5,8 +5,12 @@ Created on Fri Aug 24 22:20:07 2021
 
 @author: jhyun95
 
+Auxillary functions for working with sparse data, primarily
+LightSparseDataFrame, a wrapper around scipy.sparse.spmatrix
+with some pandas DataFrame-like functions.
 """
 
+from __future__ import print_function
 import numpy as np
 import scipy.sparse
 
@@ -59,9 +63,9 @@ def compress_rows(lsdf):
     '''
     spblock, block_indices = compress_rows_spmatrix(lsdf.data)
     num_blocks = spblock.shape[0]
-    index_labels = map(lambda x: 'B' + str(x), np.arange(num_blocks))
+    index_labels = ['B'+str(x) for x in np.arange(num_blocks)]
     lsdf_block = LightSparseDataFrame(index=index_labels, columns=lsdf.columns, data=spblock)
-    block_definitions = map(lambda x: lsdf.index[x], block_indices)
+    block_definitions = [lsdf.index[x] for x in block_indices]
     return lsdf_block, block_definitions
 
 
@@ -120,7 +124,7 @@ class LightSparseDataFrame:
         try:
             self.data = data.tocoo()
         except: 
-            print 'ERROR: Could not convert data to COO format'
+            print('ERROR: Could not convert data to COO format')
             self.data = np.nan
         self.index = np.array(index)
         self.columns = np.array(columns)
@@ -128,14 +132,15 @@ class LightSparseDataFrame:
         self.index_map = {index[i]:i for i in range(len(index))}
         self.column_map = {columns[i]:i for i in range(len(columns))}
         if len(index) != data.shape[0]:
-            print 'ERROR: Index length does not match data'
+            print('ERROR: Index length does not match data')
         if len(columns) != data.shape[1]:
-            print 'ERROR: Column length does no match data'
+            print('ERROR: Column length does no match data')
             
             
     def transpose(self):
         ''' Returns transposed table '''
-        return LightSparseDataFrame(self.index, self.columns, self.data.transpose())
+        return LightSparseDataFrame(index=self.columns, columns=self.index, 
+                                    data=self.data.transpose())
             
             
     def labelslice(self, indices=None, columns=None):
@@ -154,8 +159,8 @@ class LightSparseDataFrame:
         lsdf : LightSparseDataFrame
             LightSparseDataFrame with selected index and column labels
         '''
-        i_indices = None if indices is None else map(lambda x: self.index_map[x], indices)
-        i_columns = None if columns is None else map(lambda x: self.column_map[x], columns)
+        i_indices = None if indices is None else [self.index_map[x] for x in indices]
+        i_columns = None if columns is None else [self.column_map[x] for x in columns]
         return self.islice(i_indices, i_columns)
     
 
@@ -188,7 +193,7 @@ class LightSparseDataFrame:
             new_columns = self.columns[i_columns]
             new_data = self.data.tocsc()[:,i_columns].tocsr()[i_indices,:]
         else:
-            print 'No indices or columns selected'
+            print('No indices or columns selected')
             return None
         return LightSparseDataFrame(new_index, new_columns, new_data)
         
