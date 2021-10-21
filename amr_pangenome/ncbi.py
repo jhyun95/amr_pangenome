@@ -11,10 +11,11 @@ import subprocess as sp
 
 def run_prodigal_parallel(fna_paths, processes=4, poll_time=0.5,
     prodigal_args=['-c', '-m', '-g', '11', '-p', 'single', '-q'],
-    prodigal_path='prodigal'):
+    prodigal_path='prodigal', footer=''):
     '''
     Runs Prodigal for multiple assemblies in parallel. For each 
-    assembly file <name>.fna, creates <name>.gff and <name>.faa.
+    assembly file <name>.fna, creates <name><footer>.gff and 
+    <name><footer>.faa.
     
     Parameters
     ----------
@@ -30,6 +31,8 @@ def run_prodigal_parallel(fna_paths, processes=4, poll_time=0.5,
         (default ['-c', '-m', '-g', '11', '-p', 'single', '-q'])
     prodigal_path : str
         Path to prodigal binary (default 'prodigal')
+    footer : str
+        Label to append to output file names (default '')
     '''
     active_processes = []
     remaining_fnas = list(fna_paths)
@@ -39,8 +42,8 @@ def run_prodigal_parallel(fna_paths, processes=4, poll_time=0.5,
         while len(remaining_fnas) > 0 and len(active_processes) < processes:
             fna_path = remaining_fnas.pop()
             if os.path.exists(fna_path) and fna_path.endswith('.fna'):
-                output_faa = fna_path[:-4] + '.faa'
-                output_gff = fna_path[:-4] + '.gff'
+                output_faa = fna_path[:-4] + footer + '.faa'
+                output_gff = fna_path[:-4] + footer + '.gff'
                 args = [prodigal_path, '-i', fna_path, '-o', output_gff, 
                         '-a', output_faa, '-f', 'gff']
                 args += prodigal_args
